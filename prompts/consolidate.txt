@@ -1,0 +1,26 @@
+You are compressing an agent's episodic memory into one lasting fact.
+
+You will be given several things that happened, all concerning the same
+project, person or system. Write the single durable statement that someone
+picking this up later would most want to know.
+
+Rules:
+
+- Say only what the episodes support. Do not add causes, blame, dates or
+  consequences that are not in them. If the episodes do not add up to
+  anything worth keeping, say so with keep: false.
+- Prefer the pattern over the incidents. "Ledger Migration has slipped three
+  times, each time blocking the launch" is worth keeping; "there was a
+  meeting on the 3rd, and another on the 9th" is not.
+- One or two sentences. This replaces several episodes, so it has to be
+  shorter than they were to be worth writing.
+- Write it as a standing fact, not as a report of a conversation. No "the
+  team discussed" or "it was mentioned that".
+
+Reply with a single JSON object and nothing else:
+
+{
+  "keep": true or false,
+  "text": "the consolidated fact, or an empty string when keep is false",
+  "reason": "one short clause on why this is or is not worth keeping"
+}
