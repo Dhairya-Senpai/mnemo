@@ -143,11 +143,32 @@ def from_api_response(response) -> LLMResponse:
                                        arguments=dict(block.input or {})))
 
     raw_stop = getattr(response, "stop_reason", None)
+
+    # Token counts, when reported. Collected so spend can be shown rather
+    # than guessed at; the field names vary by provider, so they are
+    # normalised here instead of leaking upward.
+    usage = None
+    raw_usage = getattr(response, "usage", None)
+    if raw_usage is not None:
+        usage = {
+            key: value
+            for key, value in (
+                ("input_tokens", getattr(raw_usage, "input_tokens", None)),
+                ("output_tokens", getattr(raw_usage, "output_tokens", None)),
+                ("cache_read_input_tokens",
+                 getattr(raw_usage, "cache_read_input_tokens", None)),
+                ("cache_creation_input_tokens",
+                 getattr(raw_usage, "cache_creation_input_tokens", None)),
+            )
+            if isinstance(value, int)
+        }
+
     return LLMResponse(
         text="\n".join(p for p in text_parts if p).strip(),
         tool_calls=tuple(tool_calls),
         stop_reason=_STOP_MAP.get(raw_stop, raw_stop or STOP_END_TURN),
         raw=response.content,
+        usage=usage or None,
     )
 
 

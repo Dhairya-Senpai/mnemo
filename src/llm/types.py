@@ -90,6 +90,12 @@ class LLMResponse:
     tool_calls: tuple[ToolCall, ...] = ()
     stop_reason: str = STOP_END_TURN
     raw: Any = None                      # vendor object, for debugging only
+    # Token counts, when the provider reports them: input, output, and any
+    # cache figures it exposes. Kept provider-neutral (a plain dict) because
+    # every provider names these differently. None when unknown -- the fake
+    # adapter never sets it, so "we spent nothing" is distinguishable from
+    # "we did not look".
+    usage: dict[str, int] | None = None
 
     @property
     def wants_tools(self) -> bool:
