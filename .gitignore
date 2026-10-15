@@ -1,0 +1,6 @@
+CLAUDE.md
+PROJECT_CONTEXT.md
+__pycache__/
+*.pyc
+.venv/
+.cache/
