@@ -464,6 +464,34 @@ class MemoryStore:
         )
         return bool(res.properties_set)
 
+    def snapshot(self):
+        """A comparable picture of the whole graph, for showing what changed.
+
+        Taken before and after a demo moment and diffed, so the "memory
+        changes" panel reports what the graph actually did rather than what
+        an agent said it did. Keyed on internal ids so a node or edge is
+        tracked across the change.
+
+        `WHERE ID(r) >= 0` is not decoration: an unreferenced edge alias is
+        matched existentially in FalkorDB, which would under-report the
+        parallel edges versioning creates.
+        """
+        nodes = self._read(
+            "MATCH (n) RETURN ID(n), labels(n)[0], "
+            "coalesce(n.name, n.title, n.text, n.id), n.valid_to"
+        )
+        edges = self._read(
+            "MATCH (a)-[r]->(b) WHERE ID(r) >= 0 "
+            "RETURN ID(r), type(r), coalesce(a.name, a.title, a.text, a.id), "
+            "coalesce(b.name, b.title, b.text, b.id), r.valid_to"
+        )
+        return {
+            "nodes": {r[0]: {"label": r[1], "name": r[2], "valid_to": r[3]}
+                      for r in nodes},
+            "edges": {r[0]: {"type": r[1], "from": r[2], "to": r[3],
+                             "valid_to": r[4]} for r in edges},
+        }
+
     # ------------------------------------------------------------ consolidation
 
     def consolidation_candidates(self, min_events=3, limit=5):
