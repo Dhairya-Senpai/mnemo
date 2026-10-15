@@ -230,8 +230,9 @@ def _build_catalogue() -> dict[str, Tool]:
 CATALOGUE = _build_catalogue()
 
 PLANNER_TOOLS = (
-    "recall_recent", "recall_related", "current_decisions", "explain_path",
-    "insight_sources", "record_decision", "create_task", "learn_procedure",
+    "recall_recent", "recall_related", "current_decisions", "decision_history",
+    "explain_path", "insight_sources", "record_decision", "create_task",
+    "learn_procedure",
 )
 
 REVIEWER_TOOLS = (
