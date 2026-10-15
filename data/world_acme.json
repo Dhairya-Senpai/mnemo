@@ -1,0 +1,150 @@
+{
+  "tenant": "acme",
+  "graph": "tenant_acme",
+  "description": "Synthetic world for the fictional software company Acme. All names, people and events are invented. This is the state of the world BEFORE the demo starts; the demo's agents create everything else.",
+
+  "agents": [
+    { "name": "Planner",  "role": "Turns user intent into decisions and tasks" },
+    { "name": "Reviewer", "role": "Checks requests against remembered decisions and acts" }
+  ],
+
+  "people": [
+    { "name": "Lee Park",    "role": "Engineering Manager", "aliases": ["Lee", "L. Park"] },
+    { "name": "Dana Ruiz",   "role": "Senior Engineer",     "aliases": ["Dana", "D. Ruiz"] },
+    { "name": "Sam Okafor",  "role": "Product Manager",     "aliases": ["Sam"] },
+    { "name": "Priya Nair",  "role": "Finance Lead",        "aliases": ["Priya", "P. Nair"] },
+    { "name": "Marco Silva", "role": "QA Lead",             "aliases": ["Marco"] },
+    { "name": "Aisha Khan",  "role": "Design Lead",         "aliases": ["Aisha"] }
+  ],
+
+  "projects": [
+    { "name": "Spring Launch" },
+    { "name": "Ledger Migration" },
+    { "name": "Billing v2" },
+    { "name": "Mobile App" },
+    { "name": "Checkout Redesign" }
+  ],
+
+  "systems": [
+    { "name": "Ledger Service" },
+    { "name": "Payments Gateway" },
+    { "name": "Auth Service" },
+    { "name": "Notification Service" },
+    { "name": "Reporting API" }
+  ],
+
+  "sessions": [
+    {
+      "id": "sess-seed-acme",
+      "started_at": "2026-01-05T09:00:00Z",
+      "user": "system",
+      "note": "Bootstrap container. Gives every seeded fact a real provenance chain instead of leaving seed data as the only unsourced thing in the graph."
+    }
+  ],
+
+  "events": [
+    {
+      "id": "evt-seed-0001",
+      "ts": "2026-01-05T09:00:00Z",
+      "kind": "message",
+      "summary": "Company structure imported from onboarding records: people, projects, systems and their relationships.",
+      "session": "sess-seed-acme",
+      "agent": "Planner"
+    },
+    {
+      "id": "evt-seed-0002",
+      "ts": "2026-02-18T14:20:00Z",
+      "kind": "decision",
+      "summary": "Planning review set the Spring Launch date to April 1, 2027.",
+      "session": "sess-seed-acme",
+      "agent": "Planner"
+    },
+    {
+      "id": "evt-seed-0003",
+      "ts": "2026-09-30T11:05:00Z",
+      "kind": "message",
+      "summary": "Dependency audit confirmed Billing v2 and Mobile App both sit behind Spring Launch, which itself waits on Ledger Migration.",
+      "session": "sess-seed-acme",
+      "agent": "Reviewer"
+    }
+  ],
+
+  "decisions": [
+    {
+      "id": "dec-0001",
+      "title": "Ship Spring Launch on April 1, 2027",
+      "reason": "Ledger Migration was forecast to complete in March, leaving a two-week buffer.",
+      "valid_from": "2026-02-18T14:20:00Z",
+      "source_event": "evt-seed-0002",
+      "made_by": "Sam Okafor",
+      "recorded_in": "evt-seed-0002",
+      "affects": ["Spring Launch"],
+      "note": "PLANTED. Demo moment 1 creates the 'Delay Spring Launch to May 15' decision, which SUPERSEDES this one. Left open (no valid_to) so the demo can retire it live."
+    }
+  ],
+
+  "facts": [
+    { "type": "OWNS", "from": "Sam Okafor", "to": "Spring Launch",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+
+    { "type": "OWNS", "from": "Lee Park", "to": "Ledger Migration",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001",
+      "note": "PLANTED. Demo moment 5b retires this edge and opens a new one to Dana Ruiz. This is the only relationship-versioning moment in the demo." },
+
+    { "type": "OWNS", "from": "Lee Park", "to": "Billing v2",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "OWNS", "from": "Aisha Khan", "to": "Checkout Redesign",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "OWNS", "from": "Sam Okafor", "to": "Mobile App",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+
+    { "type": "WORKED_ON", "from": "Dana Ruiz", "to": "Ledger Migration",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001",
+      "note": "PLANTED. Dana does the work; Lee holds the title. The gap between OWNS and WORKED_ON is the informal-expert fact." },
+    { "type": "WORKED_ON", "from": "Dana Ruiz", "to": "Billing v2",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "WORKED_ON", "from": "Lee Park", "to": "Spring Launch",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "WORKED_ON", "from": "Marco Silva", "to": "Billing v2",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "WORKED_ON", "from": "Marco Silva", "to": "Mobile App",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "WORKED_ON", "from": "Aisha Khan", "to": "Checkout Redesign",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "WORKED_ON", "from": "Priya Nair", "to": "Ledger Migration",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+
+    { "type": "USES", "from": "Ledger Migration", "to": "Ledger Service",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001",
+      "note": "PLANTED. The finance-system hop. 'Notify Priya when finance systems are affected' resolves through this edge." },
+    { "type": "USES", "from": "Billing v2", "to": "Payments Gateway",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "USES", "from": "Billing v2", "to": "Ledger Service",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "USES", "from": "Mobile App", "to": "Auth Service",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "USES", "from": "Mobile App", "to": "Notification Service",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "USES", "from": "Checkout Redesign", "to": "Payments Gateway",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "USES", "from": "Spring Launch", "to": "Reporting API",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+
+    { "type": "DEPENDS_ON", "from": "Billing v2", "to": "Spring Launch",
+      "valid_from": "2026-09-30T11:05:00Z", "source_event": "evt-seed-0003",
+      "note": "PLANTED. The hidden dependency the Reviewer finds in demo moment 3." },
+    { "type": "DEPENDS_ON", "from": "Mobile App", "to": "Spring Launch",
+      "valid_from": "2026-09-30T11:05:00Z", "source_event": "evt-seed-0003" },
+    { "type": "DEPENDS_ON", "from": "Spring Launch", "to": "Ledger Migration",
+      "valid_from": "2026-09-30T11:05:00Z", "source_event": "evt-seed-0003",
+      "note": "PLANTED. Makes 'Ledger migration blocked' a real graph path rather than free text: Billing v2 -> Spring Launch -> Ledger Migration -> Ledger Service." }
+  ],
+
+  "event_about": [
+    { "event": "evt-seed-0002", "label": "Project", "name": "Spring Launch" },
+    { "event": "evt-seed-0003", "label": "Project", "name": "Billing v2" },
+    { "event": "evt-seed-0003", "label": "Project", "name": "Mobile App" },
+    { "event": "evt-seed-0003", "label": "Project", "name": "Spring Launch" },
+    { "event": "evt-seed-0003", "label": "Project", "name": "Ledger Migration" }
+  ]
+}

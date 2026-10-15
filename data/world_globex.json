@@ -1,0 +1,101 @@
+{
+  "tenant": "globex",
+  "graph": "tenant_globex",
+  "description": "Synthetic world for the fictional company Globex. Exists to prove per-tenant isolation (demo moment 6). Deliberately shares PROJECT NAMES with Acme but nothing else, so the same question reaches a genuinely different answer rather than an empty graph.",
+
+  "agents": [
+    { "name": "Planner",  "role": "Turns user intent into decisions and tasks" },
+    { "name": "Reviewer", "role": "Checks requests against remembered decisions and acts" }
+  ],
+
+  "people": [
+    { "name": "Nia Osei",      "role": "Engineering Manager", "aliases": ["Nia"] },
+    { "name": "Tomas Brandt",  "role": "Senior Engineer",     "aliases": ["Tomas", "Tom"] },
+    { "name": "Hana Sato",     "role": "Product Manager",     "aliases": ["Hana"] }
+  ],
+
+  "projects": [
+    { "name": "Billing v2" },
+    { "name": "Spring Launch" },
+    { "name": "Partner Portal" }
+  ],
+
+  "systems": [
+    { "name": "Ledger Service" },
+    { "name": "Payments Gateway" }
+  ],
+
+  "sessions": [
+    {
+      "id": "sess-seed-globex",
+      "started_at": "2026-01-05T09:00:00Z",
+      "user": "system",
+      "note": "Bootstrap container, same role as Acme's."
+    }
+  ],
+
+  "events": [
+    {
+      "id": "evt-seed-0001",
+      "ts": "2026-01-05T09:00:00Z",
+      "kind": "message",
+      "summary": "Company structure imported from onboarding records: people, projects, systems and their relationships.",
+      "session": "sess-seed-globex",
+      "agent": "Planner"
+    },
+    {
+      "id": "evt-seed-0002",
+      "ts": "2026-08-12T10:00:00Z",
+      "kind": "decision",
+      "summary": "Billing v2 cleared for independent release; it was deliberately decoupled from Spring Launch.",
+      "session": "sess-seed-globex",
+      "agent": "Planner"
+    }
+  ],
+
+  "decisions": [
+    {
+      "id": "dec-0001",
+      "title": "Release Billing v2 independently of Spring Launch",
+      "reason": "Globex decoupled billing from the launch train so finance work could ship on its own cadence.",
+      "valid_from": "2026-08-12T10:00:00Z",
+      "source_event": "evt-seed-0002",
+      "made_by": "Hana Sato",
+      "recorded_in": "evt-seed-0002",
+      "affects": ["Billing v2"],
+      "note": "PLANTED. This is the isolation contrast. Asked 'can we ship the billing feature?', Acme blocks (Billing v2 depends on a delayed Spring Launch) and Globex clears it (explicitly decoupled). Same question, opposite answer, and the reason is readable in each graph."
+    }
+  ],
+
+  "facts": [
+    { "type": "OWNS", "from": "Hana Sato", "to": "Billing v2",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "OWNS", "from": "Nia Osei", "to": "Spring Launch",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "OWNS", "from": "Nia Osei", "to": "Partner Portal",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+
+    { "type": "WORKED_ON", "from": "Tomas Brandt", "to": "Billing v2",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "WORKED_ON", "from": "Tomas Brandt", "to": "Partner Portal",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "WORKED_ON", "from": "Nia Osei", "to": "Spring Launch",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+
+    { "type": "USES", "from": "Billing v2", "to": "Payments Gateway",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "USES", "from": "Billing v2", "to": "Ledger Service",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+    { "type": "USES", "from": "Partner Portal", "to": "Payments Gateway",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001" },
+
+    { "type": "DEPENDS_ON", "from": "Partner Portal", "to": "Spring Launch",
+      "valid_from": "2026-01-05T09:00:00Z", "source_event": "evt-seed-0001",
+      "note": "Globex has a dependency too, just not on Billing v2. Keeps the contrast honest: the different answer comes from a different graph shape, not from Globex being empty." }
+  ],
+
+  "event_about": [
+    { "event": "evt-seed-0002", "label": "Project", "name": "Billing v2" },
+    { "event": "evt-seed-0002", "label": "Project", "name": "Spring Launch" }
+  ]
+}
