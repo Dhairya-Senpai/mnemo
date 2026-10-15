@@ -4,3 +4,10 @@ __pycache__/
 *.pyc
 .venv/
 .cache/
+
+# secrets - never commit
+.env
+.env.*
+!.env.example
+*.key
+secrets.json
