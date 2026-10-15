@@ -1,0 +1,363 @@
+# The Cypher this project depends on
+
+Every query below is live in the code, with the file it comes from. They are
+grouped by the job they do, and each one says *why* it is written that way —
+several are shaped by FalkorDB behaviour that is not obvious, and the wrong
+shape fails silently rather than erroring.
+
+Companion documents: [`SCHEMA.md`](SCHEMA.md) for the graph model and the
+verification behind it, [`AI-DISCLOSURE.md`](AI-DISCLOSURE.md) for how this
+was built.
+
+Running convention: node labels and relationship types are interpolated into
+query strings from fixed tables in [`src/memory/schema.py`](../src/memory/schema.py),
+never from caller input, because Cypher cannot parameterise either. Every
+*value* travels as a query parameter.
+
+---
+
+## 1. Reading what is currently true
+
+The single most-used pattern in the system. A fact is current when it has no
+end date, and FalkorDB cannot store `null` as a property value, so "no end
+date" means the key is absent.
+
+```cypher
+MATCH (p:Person)-[o:OWNS]->(j:Project {name: $project})
+WHERE o.valid_to IS NULL
+RETURN p.name, o.valid_from
+```
+
+Two things are load-bearing here:
+
+- `WHERE o.valid_to IS NULL` is the whole versioning model. Drop it and you
+  get every owner the project has ever had.
+- The edge alias `o` is **referenced** in the `WHERE`. This matters: FalkorDB
+  matches an unreferenced relationship existentially, so a pattern whose edge
+  alias appears nowhere else reports only that *at least one* edge exists.
+  Versioning creates parallel edges between the same pair, so an unreferenced
+  alias silently under-reports. Referencing it in the `WHERE` fixes that as a
+  side effect; `WHERE ID(o) >= 0` is the documented workaround when there is
+  no other filter.
+
+*Source: `MemoryStore.current_facts`, `src/memory/store.py`.*
+
+## 2. Retiring a fact without deleting it
+
+```cypher
+MATCH (a:Person {name: $from_name})-[r:OWNS]->(b:Project {name: $to_name})
+WHERE r.valid_to IS NULL
+SET r.valid_to = $now, r.retired_by = $eid
+RETURN count(r)
+```
+
+The `WHERE` restricts the write to the currently-open edge, so re-running it
+is harmless and a retired edge is never re-stamped. Scoping comes from the
+`MATCH` pattern and never from `LIMIT`: in FalkorDB, `CREATE`, `SET`,
+`DELETE` and `MERGE` all run to completion **before** a trailing `LIMIT`
+applies, so `... SET ... RETURN r LIMIT 1` would update every match and
+return one.
+
+The old edge stays in the graph. That is what makes history queryable.
+
+*Source: `MemoryStore.retire_fact`.*
+
+## 3. Claiming a task atomically
+
+The coordination primitive. FalkorDB serialises writes per graph and each
+write query is atomic, but it has **no multi-query transactions** — so the
+claim has to be one query that both tests and sets the status.
+
+```cypher
+MATCH (t:Task)-[:ASSIGNED_TO]->(:Agent {name: $agent})
+WHERE t.status = 'open'
+WITH t ORDER BY t.created_at, t.id LIMIT 1
+SET t.status = 'claimed', t.claimed_by = $worker, t.claimed_at = $now
+RETURN t.id AS id
+```
+
+The caller won if and only if the result set is non-empty; a loser's `MATCH`
+finds nothing because the status is no longer `open` by the time its write is
+dequeued.
+
+`WITH t ... LIMIT 1` **before** the `SET` is essential and is the exception to
+the rule in section 2: a `LIMIT` inside a `WITH` projection does constrain the
+following write, while a trailing one does not. Both behaviours were tested
+directly. Get this wrong and one call claims every open task at once.
+
+Measured: 16 concurrent clients draining 100 tasks produced 100 claims and
+zero double-claims. The same logic written as read-then-write across two
+queries had **16 of 16** clients believe they had won.
+
+*Source: `MemoryStore.claim_task`; measured by `scripts/demo_concurrency.py`.*
+
+## 4. Multi-hop traversal over current edges only
+
+"What does Billing v2 sit behind?" — the query behind the blocked-release
+moment.
+
+```cypher
+MATCH path = (:Project {name: $project})-[:DEPENDS_ON*1..4]->(t:Project)
+WHERE all(r IN relationships(path) WHERE r.valid_to IS NULL)
+RETURN t.name, length(path) AS hops
+ORDER BY hops, t.name
+```
+
+The obvious way to write this does not work. Binding the variable-length
+relationship — `-[d:DEPENDS_ON*1..4]->` — gives a **Path**, not a List, so
+`all(r IN d ...)` and `size(d)` both fail with a type error. You must bind the
+path and go through `relationships(path)`. `length(path)` and `nodes(path)`
+are fine.
+
+This is the core versioned-graph query: filtering a multi-hop walk to
+currently-valid edges. It is worth knowing that the natural phrasing is the
+broken one.
+
+The reverse direction answers a different question — "what breaks if this
+slips?" — and is the same query with the arrow turned around
+(`MemoryStore.dependents_of`).
+
+*Source: `MemoryStore.depends_on_chain`.*
+
+## 5. Project state, derived rather than stored
+
+A `Project` deliberately has **no `status` property**. Its state is the set of
+decisions currently in force against it.
+
+```cypher
+MATCH (d:Decision)-[a:AFFECTS]->(p:Project {name: $project})
+WHERE d.valid_to IS NULL AND a.valid_to IS NULL
+RETURN d.id, d.title, d.reason, d.valid_from, p.name
+ORDER BY d.valid_from DESC
+```
+
+Both the decision *and* the edge carry validity, and both are checked: a
+decision can stay in force while its scope narrows.
+
+The reason this is better than a status column is that state can never drift
+from its justification. A stored status can be stale or unexplained; a derived
+one arrives with its reason attached, and retiring the decision updates the
+project's state for free.
+
+*Source: `MemoryStore.current_decisions`.*
+
+## 6. Supersession: what replaced what
+
+`valid_to` says a decision stopped being current. `SUPERSEDES` says what
+replaced it. Both are needed — the first makes "what is true now" a filter,
+the second makes "walk me back" a traversal.
+
+```cypher
+MATCH (old:Decision {id: $old}), (new:Decision {id: $new})
+WHERE old.valid_to IS NULL
+SET old.valid_to = $now
+CREATE (new)-[:SUPERSEDES]->(old)
+```
+
+```cypher
+MATCH path = (d:Decision {id: $did})-[:SUPERSEDES*0..10]->(older:Decision)
+RETURN older.id, older.title, older.valid_from, older.valid_to, length(path)
+ORDER BY length(path)
+```
+
+`*0..10` includes the decision itself at distance 0, so one query returns the
+current decision and its whole ancestry in order.
+
+*Source: `MemoryStore.record_decision`, `MemoryStore.decision_history`.*
+
+## 7. Provenance: why do we believe this?
+
+The explainability spine. One query walks from a decision to the agent that
+recorded it.
+
+```cypher
+MATCH (dec:Decision {id: $did})-[:RECORDED_IN]->(e:Event)<-[:HAS_EVENT]-(s:Session)
+MATCH (ag:Agent)-[:PERFORMED]->(e)
+MATCH (who:Person)-[:MADE]->(dec)
+RETURN dec.title, who.name, e.id, e.ts, s.id, ag.name
+```
+
+Versioned **nodes** get a traversable provenance edge like this. Versioned
+**relationships** cannot: Cypher has no edge-to-edge relationship, so an edge
+carries `source_event` as a scalar id and the event is recovered by a second
+`MATCH` on `Event.id`. That asymmetry is deliberate — see `SCHEMA.md` §2.
+
+*Source: tests and `MemoryStore.explain_path`.*
+
+## 8. The informal expert — version-aware negation
+
+"Who works on Ledger Migration but does not currently own it?"
+
+```cypher
+MATCH (p:Person)-[w:WORKED_ON]->(j:Project {name: $project})
+WHERE w.valid_to IS NULL
+OPTIONAL MATCH (p)-[o:OWNS]->(j) WHERE o.valid_to IS NULL
+WITH p, o WHERE o IS NULL
+RETURN p.name, p.role
+ORDER BY p.name
+```
+
+Existential subqueries do not exist in FalkorDB: `WHERE NOT EXISTS { MATCH
+... }` is a parse error, and `exists((p)-[:OWNS]->(j))` is rejected because
+traversal patterns are not allowed as arguments.
+
+The pattern predicate `WHERE NOT (p)-[:OWNS]->(j)` *is* accepted — and is
+**wrong here**, because it cannot see `valid_to` and would exclude someone
+whose ownership was *retired*. That is exactly the state the ownership-transfer
+moment creates. `OPTIONAL MATCH` plus a null check is version-aware and is the
+form to use. `CALL { ... }` subqueries also work when neither fits.
+
+*Source: `tests/test_memory_tools.py`, `MemoryStore` procedural queries.*
+
+## 9. A rule firing without being named
+
+Procedural memory. A rule is taught about *Ledger Service*; it must fire for
+*Billing v2*, a project the rule never mentions, because Billing v2 uses that
+system.
+
+```cypher
+MATCH (p:Procedure)-[s:APPLIES_TO]->(sys:System)<-[u:USES]-(proj:Project {name: $name})
+WHERE p.valid_to IS NULL AND s.valid_to IS NULL AND u.valid_to IS NULL
+RETURN p.id, p.name, p.trigger, p.action, 'via system ' + sys.name
+```
+
+Three validity checks, because all three edges can be retired independently:
+the rule, the rule's scope, and the project's use of the system. Retire any one
+and the rule correctly stops firing.
+
+*Source: `MemoryStore.get_applicable_procedures`.*
+
+## 10. Choosing what to consolidate
+
+Consolidation is graph-driven. The graph picks the work; the model only writes
+prose.
+
+```cypher
+MATCH (e:Event)-[:ABOUT]->(n)
+WHERE NOT (e)<-[:DERIVED_FROM]-(:Insight) AND e.kind <> 'consolidation'
+WITH n, count(e) AS episodes, collect(e.id) AS event_ids
+WHERE episodes >= $min_events
+RETURN labels(n)[0], coalesce(n.name, n.title, n.id), episodes, event_ids
+ORDER BY episodes DESC LIMIT $limit
+```
+
+Three things are doing real work:
+
+- Grouping is a traversal, not a scan.
+- `NOT (e)<-[:DERIVED_FROM]-(:Insight)` is how "already absorbed" is
+  represented. There is no `consolidated` flag anywhere, so the marker and the
+  audit trail cannot disagree.
+- `e.kind <> 'consolidation'` stops the feedback loop: writing an insight
+  produces an event `ABOUT` the same entity, and without this exclusion each
+  consolidation would feed the next one forever.
+
+Writing the insight links it to every source in one query:
+
+```cypher
+MATCH (i:Insight {id: $iid})
+MATCH (e:Event) WHERE e.id IN $ids
+CREATE (i)-[:DERIVED_FROM]->(e)
+```
+
+The caller checks `relationships_created` against the number of ids, so an
+insight is never written with dangling provenance.
+
+*Source: `MemoryStore.consolidation_candidates`, `MemoryStore.record_insight`.*
+
+## 11. Explaining how two things connect
+
+```cypher
+MATCH (a:Project {name: $from_name}), (b:Project {name: $to_name})
+WITH shortestPath((a)-[*..6]->(b)) AS p
+WHERE p IS NOT NULL
+RETURN [n IN nodes(p) | coalesce(n.name, n.title, n.id)] AS chain,
+       [r IN relationships(p) | type(r)] AS steps,
+       length(p) AS hops
+```
+
+`shortestPath()` is **only accepted in `WITH` or `RETURN`** in FalkorDB —
+`MATCH p = shortestPath(...)` is rejected outright. Match the endpoints first,
+then compute the path.
+
+Returns `["Billing v2", "Spring Launch", "Ledger Migration"]` with
+`["DEPENDS_ON", "DEPENDS_ON"]`, which is what turns "this is blocked" into
+"this is blocked, and here is the chain".
+
+*Source: `MemoryStore.explain_path`.*
+
+## 12. The graph algorithm
+
+One algorithm, per the project's scope rule. Betweenness centrality over the
+dependency graph answers "what is the single point of failure?"
+
+```cypher
+CALL algo.betweenness({nodeLabels: ['Project'],
+                       relationshipTypes: ['DEPENDS_ON']})
+YIELD node, score
+WHERE score > 0
+RETURN node.name, score
+ORDER BY score DESC, node.name
+LIMIT $limit
+```
+
+Scoping matters: run unscoped it also ranks Events and Sessions, which is
+noise. On the seeded graph it returns **Spring Launch, 2.0** — the project
+everything else sits behind.
+
+Two limitations, both reported rather than hidden:
+
+- **It answers *what*, never *who*.** `OWNS` and `WORKED_ON` point from a
+  person into a project, so a `Person` has no incoming edges, is never an
+  intermediate node, and scores exactly 0.
+- **It cannot see validity windows.** The algorithm walks structure, and
+  retiring a fact sets `valid_to` rather than deleting the edge, so a retired
+  `DEPENDS_ON` still contributes. Every other read filters on validity; this
+  one structurally cannot. `critical_projects` therefore returns the count of
+  retired dependency edges alongside the ranking — zero means the ranking is
+  exactly current.
+
+*Source: `MemoryStore.critical_projects`.*
+
+## 13. Indexes
+
+```cypher
+CREATE INDEX FOR (n:Event) ON (n.id)
+```
+
+Created at seed time for `Event.id`, `Event.ts`, `Session.id`, `Task.id`,
+`Task.status`, `Ticket.id`, `Person.name`, `Project.name`, `System.name`,
+`Decision.id`, `Procedure.id`, `Insight.id`. `CALL db.indexes()` reports one
+row per label, so twelve property indexes show as ten rows.
+
+Relationship indexes work too — `CREATE INDEX FOR ()-[r:OWNS]-() ON (r.valid_to)` —
+but none are created, deliberately: `WHERE valid_to IS NULL` **cannot use an
+index**, because null is never stored and so never appears in one. Verified
+with `GRAPH.EXPLAIN`: the `IS NULL` form plans as `All Node Scan` + `Filter`,
+while a range comparison plans as `Edge By Index Scan`.
+
+That is the one real argument for a sentinel end-date instead of an absent
+one, and it was considered and rejected: absent-means-current is far easier to
+explain, and this graph is two orders of magnitude away from the size where it
+would matter.
+
+*Source: `src/memory/schema.py`, `scripts/seed.py`.*
+
+---
+
+## FalkorDB behaviours worth knowing before writing more
+
+All verified by running them against FalkorDB graph module v6.0.2, not read
+from documentation.
+
+| Behaviour | Consequence |
+|---|---|
+| `null` cannot be stored as a property value | `SET x.p = NULL` removes the key; "absent" is how we say "current" |
+| Trailing `LIMIT` does not constrain `CREATE`/`SET`/`DELETE`/`MERGE` | Scope writes with the `MATCH` pattern, or `WITH ... LIMIT` before the write |
+| `WITH ... LIMIT n` **does** constrain a following write | This is what makes the atomic claim correct |
+| An unreferenced edge alias is matched existentially | Always reference the alias when counting over versioned edges |
+| A variable-length relationship variable is a `Path`, not a `List` | Use `relationships(path)` for `all()` / `none()` / `size()` |
+| `shortestPath()` is rejected in `MATCH` | Only valid in `WITH` or `RETURN` |
+| `EXISTS { ... }` and `exists((a)-[:R]->(b))` are unsupported | Use a pattern predicate (version-blind) or `OPTIONAL MATCH` (version-aware) |
+| Indexes do not serve `<>` or `IS NULL` filters | `valid_to IS NULL` always scans; fine at this size |
+| A query with no `MATCH`/`CREATE` fails on a graph that does not exist | `Invalid graph operation on empty key` — materialise the graph first |
+| Writes serialise per graph; each write query is atomic; no multi-query transactions | Compare-and-set must be a single query |
