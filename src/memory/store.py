@@ -35,6 +35,8 @@ from .schema import (
     PROCEDURE_SCOPES,
     check_fact_type,
     check_label,
+    clean_label as check_open_label,
+    clean_predicate as check_open_predicate,
 )
 
 
@@ -101,11 +103,19 @@ class MemoryStore:
         )
         return sid
 
-    def record_event(self, session_id, agent, kind, summary, about=None, ts=None):
+    def record_event(self, session_id, agent, kind, summary, about=None, ts=None,
+                     speaker=None):
         """Write one episodic event and wire it to its session, agent and subjects.
 
         `about` is a list of (label, name) pairs naming the entities the event
         concerned; those ABOUT edges are what recall_related traverses later.
+
+        `speaker` says who uttered a message: "user" when a person typed it,
+        or an agent's name when an agent said it. PERFORMED alone cannot
+        carry this -- an agent records the user's message, so it performs an
+        event it did not author. Without the distinction a conversation
+        cannot be read back out of the graph, which is what lets the UI
+        rebuild a transcript from memory rather than from browser state.
         """
         if kind not in EVENT_KINDS:
             raise ValueError(f"unknown event kind {kind!r}; expected one of {EVENT_KINDS}")
@@ -118,6 +128,9 @@ class MemoryStore:
             sid=session_id, agent=agent, eid=eid,
             ts=ts or self.now(), kind=kind, summary=summary,
         )
+        if speaker:
+            self._write("MATCH (e:Event {id:$eid}) SET e.speaker = $speaker",
+                        eid=eid, speaker=speaker)
         for label, name in about or []:
             check_label(label, ENTITY_LABELS, "ABOUT target")
             key = "id" if label == "Decision" else "name"
@@ -154,6 +167,48 @@ class MemoryStore:
              "agent": r[4], "session": r[5]}
             for r in rows
         ]
+
+    def session_user(self, session_id):
+        """Who the agent is talking to in this session.
+
+        Without this the agent has no referent for "I" or "me" and has to
+        guess a subject when recording a personal fact - which it does badly,
+        sometimes filing the user's dentist appointment under its own name.
+        """
+        rows = self._read("MATCH (s:Session {id:$sid}) RETURN s.user",
+                          sid=session_id)
+        return rows[0][0] if rows else None
+
+    def session_transcript(self, session_id, limit=200):
+        """Read a conversation back out of the graph, oldest first.
+
+        The UI renders chat history from this rather than keeping it in
+        browser state, so reloading the page does not lose the conversation:
+        it was never in the page. Only events with a `speaker` are utterances;
+        everything else in the session is the agent's working record.
+        """
+        rows = self._read(
+            "MATCH (s:Session {id:$sid})-[:HAS_EVENT]->(e:Event) "
+            "WHERE e.speaker IS NOT NULL "
+            "RETURN e.id, e.ts, e.speaker, e.summary "
+            "ORDER BY e.ts, e.id LIMIT $limit",
+            sid=session_id, limit=limit,
+        )
+        return [{"id": r[0], "ts": r[1], "speaker": r[2], "text": r[3]}
+                for r in rows]
+
+    def list_sessions(self, limit=25):
+        """Sessions newest first, with how much was said in each."""
+        rows = self._read(
+            "MATCH (s:Session) "
+            "OPTIONAL MATCH (s)-[:HAS_EVENT]->(e:Event) WHERE e.speaker IS NOT NULL "
+            "WITH s, count(e) AS turns "
+            "RETURN s.id, s.started_at, s.user, turns "
+            "ORDER BY s.started_at DESC, s.id DESC LIMIT $limit",
+            limit=limit,
+        )
+        return [{"id": r[0], "started_at": r[1], "user": r[2], "turns": r[3]}
+                for r in rows]
 
     def recall_related(self, label, name, limit=20):
         """Everything the graph currently knows about one entity.
@@ -390,6 +445,163 @@ class MemoryStore:
              "current": r[3] is None}
             for r in rows
         ]
+
+    # ------------------------------------------------------------- open facts
+
+    def _resolve_entity(self, name, label):
+        """Find an existing node by name, or make one with the given type.
+
+        Reuse comes first and ignores the proposed type on purpose. If the
+        agent says "Priya Nair" is a Contact and a Person called Priya Nair
+        already exists, the right answer is the existing Priya - one node with
+        many facts, not two nodes that never meet. Entity resolution is by
+        name, which works here because the data is synthetic and names are
+        controlled; a real deployment needs more.
+
+        Returns (internal id, label, created?).
+        """
+        existing = self._read(
+            "MATCH (n) WHERE n.name = $name RETURN ID(n), labels(n)[0] LIMIT 1",
+            name=name)
+        if existing:
+            return existing[0][0], existing[0][1], False
+
+        safe = check_open_label(label)
+        rows = self._write(
+            f"CREATE (n:{safe} {{name:$name, valid_from:$now}}) RETURN ID(n)",
+            name=name, now=self.now()).result_set
+        return rows[0][0], safe, True
+
+    def remember_fact(self, session_id, agent, subject, predicate, obj,
+                      subject_type="Thing", object_type="Thing",
+                      when=None, note=None):
+        """Store an arbitrary fact as a typed, versioned, sourced edge.
+
+        This is what makes the memory open rather than a fixed form. The agent
+        chooses the types and the relationship name at write time; they become
+        real labels and edge types, so everything built for the closed schema
+        - recall, path explanation, centrality - works on them unchanged.
+
+        It is not a junk drawer, because the fact arrives structured and gets
+        the same discipline as everything else: entities are reused rather
+        than duplicated, the edge carries valid_from / valid_to, and
+        source_event points at the episode that established it. A fact learned
+        this way can be retired and superseded like any other.
+
+        `when` is the date the fact is *about* (not when it was recorded),
+        which is what makes what_is_on() possible.
+        """
+        # Validate everything before writing anything. These raise on bad
+        # model output, and a half-written fact - an event with no fact
+        # attached - is worse than a refusal, because it looks like memory.
+        rel = check_open_predicate(predicate)
+        check_open_label(subject_type)
+        check_open_label(object_type)
+        if not (subject or "").strip() or not (obj or "").strip():
+            raise ValueError("a fact needs both a subject and an object")
+
+        eid = self.record_event(
+            session_id, agent, "message",
+            note or f"Learned: {subject} {predicate} {obj}"
+                    + (f" (on {when})" if when else ""))
+
+        sid, slabel, s_new = self._resolve_entity(subject, subject_type)
+        oid, olabel, o_new = self._resolve_entity(obj, object_type)
+
+        props = {"valid_from": self.now(), "source_event": eid}
+        if when:
+            props["when"] = when
+        clause = ", ".join(f"{k}:${k}" for k in props)
+        self._write(
+            f"MATCH (s) WHERE ID(s) = $sid MATCH (o) WHERE ID(o) = $oid "
+            f"CREATE (s)-[:{rel} {{{clause}}}]->(o)",
+            sid=sid, oid=oid, **props)
+
+        # Tie the episode to both ends so recall_related finds it from either.
+        for node_id in (sid, oid):
+            self._write(
+                "MATCH (e:Event {id:$eid}) MATCH (n) WHERE ID(n) = $nid "
+                "CREATE (e)-[:ABOUT]->(n)", eid=eid, nid=node_id)
+
+        return {
+            "subject": {"name": subject, "type": slabel, "created": s_new},
+            "predicate": rel,
+            "object": {"name": obj, "type": olabel, "created": o_new},
+            "when": when,
+            "source_event": eid,
+        }
+
+    def retire_open_fact(self, session_id, agent, subject, predicate, obj, reason):
+        """Close an open-layer fact. Nothing is deleted, as everywhere else."""
+        rel = check_open_predicate(predicate)
+        eid = self.record_event(
+            session_id, agent, "correction",
+            f"Retired: {subject} {predicate} {obj} ({reason})")
+        res = self._write(
+            f"MATCH (s)-[r:{rel}]->(o) "
+            f"WHERE s.name = $subject AND o.name = $obj AND r.valid_to IS NULL "
+            f"SET r.valid_to = $now, r.retired_by = $eid "
+            f"RETURN count(r)",
+            subject=subject, obj=obj, now=self.now(), eid=eid)
+        return res.result_set[0][0] if res.result_set else 0
+
+    def recall_entity(self, name, limit=25):
+        """Everything known about something, whatever type it turned out to be.
+
+        Deliberately takes no label: the point of the open layer is that the
+        caller need not know how a thing was typed in order to ask about it.
+        """
+        found = self._read(
+            "MATCH (n) WHERE n.name = $name "
+            "RETURN labels(n)[0], n.name, n.valid_to LIMIT 1", name=name)
+        if not found:
+            return None
+
+        out = self._read(
+            "MATCH (n {name:$name})-[r]->(m) WHERE r.valid_to IS NULL "
+            "RETURN type(r), labels(m)[0], coalesce(m.name, m.title, m.id), "
+            "       r.when, r.valid_from LIMIT $limit",
+            name=name, limit=limit)
+        inc = self._read(
+            "MATCH (m)-[r]->(n {name:$name}) WHERE r.valid_to IS NULL "
+            "RETURN type(r), labels(m)[0], coalesce(m.name, m.title, m.id), "
+            "       r.when, r.valid_from LIMIT $limit",
+            name=name, limit=limit)
+        events = self._read(
+            "MATCH (e:Event)-[:ABOUT]->(n {name:$name}) "
+            "RETURN e.ts, e.kind, e.summary ORDER BY e.ts DESC LIMIT $limit",
+            name=name, limit=limit)
+
+        def facts(rows):
+            return [{"predicate": r[0], "type": r[1], "name": r[2],
+                     "when": r[3], "since": r[4]} for r in rows]
+
+        return {
+            "name": found[0][1],
+            "type": found[0][0],
+            "retired": found[0][2] is not None,
+            "facts_out": facts(out),
+            "facts_in": facts(inc),
+            "episodes": [{"ts": r[0], "kind": r[1], "summary": r[2]}
+                         for r in events],
+        }
+
+    def what_is_on(self, date, limit=50):
+        """Every current fact dated on a given day.
+
+        The reason open facts carry `when`: without a date on the fact itself
+        there is no way to ask "what else is happening then", and a memory
+        that cannot answer that will cheerfully double-book you.
+        """
+        rows = self._read(
+            "MATCH (s)-[r]->(o) "
+            "WHERE ID(r) >= 0 AND r.valid_to IS NULL AND r.when STARTS WITH $date "
+            "RETURN coalesce(s.name, s.title, s.id), type(r), "
+            "       coalesce(o.name, o.title, o.id), r.when "
+            "ORDER BY r.when LIMIT $limit",
+            date=date, limit=limit)
+        return [{"subject": r[0], "predicate": r[1], "object": r[2], "when": r[3]}
+                for r in rows]
 
     # ---------------------------------------------------------------- procedural
 

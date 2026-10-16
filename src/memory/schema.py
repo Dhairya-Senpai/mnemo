@@ -54,6 +54,80 @@ INDEXES = [
 ]
 
 
+# --------------------------------------------------------------- open layer
+#
+# The tables above are the *behavioural* core: types the system does something
+# with (supersession, rule matching, atomic claiming, consolidation). They stay
+# closed, because code depends on their shape.
+#
+# Everything else a user might say is an ordinary fact, and the agent gets to
+# invent the type at write time. That is the difference between a memory and a
+# form with fixed fields.
+#
+# Cypher cannot parameterise a label or a relationship type, so model output
+# that becomes one must be validated rather than escaped. These patterns are
+# the whole of that defence: anything not matching is refused outright, so a
+# label can never carry a brace, a quote, or a Cypher keyword into a query.
+
+import re
+
+_LABEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,30}$")
+_PREDICATE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,40}$")
+
+# Open facts may not impersonate a behavioural type. A node labelled Decision
+# would be picked up by current_decisions() and by supersession logic that
+# expects properties an open fact does not have.
+RESERVED_LABELS = frozenset({
+    "Agent", "Session", "Event", "Decision", "Procedure", "Insight",
+    "Task", "Ticket",
+})
+
+# Likewise for edges: these carry behaviour elsewhere in the system.
+RESERVED_PREDICATES = frozenset({
+    "HAS_EVENT", "PERFORMED", "ABOUT", "RECORDED_IN", "LEARNED_FROM",
+    "DERIVED_FROM", "MADE", "SUPERSEDES", "CREATED", "ASSIGNED_TO",
+    "CONCERNS", "FILED", "BLOCKS", "CITES", "APPLIES_TO",
+}) | set(FACT_ENDPOINTS)
+
+
+def clean_label(label: str) -> str:
+    """Validate a model-supplied node label, or refuse it.
+
+    Returns the label unchanged on success. Never attempts to repair input:
+    a label that needs repairing is one we do not understand, and guessing
+    would put unvalidated text into a query.
+    """
+    text = (label or "").strip()
+    if not _LABEL_RE.match(text):
+        raise ValueError(
+            f"invalid type {label!r}: use a short name starting with a letter, "
+            f"letters digits and underscores only (e.g. Appointment, Vendor)")
+    if text in RESERVED_LABELS:
+        raise ValueError(
+            f"{text!r} is a built-in type with its own behaviour and cannot be "
+            f"used for a plain fact; use the dedicated tool for it")
+    return text
+
+
+def clean_predicate(predicate: str) -> str:
+    """Normalise a model-supplied relationship name, or refuse it.
+
+    Spaces and hyphens become underscores and the result is upper-cased, so
+    "has appointment" and "HAS_APPOINTMENT" land on the same edge type rather
+    than fragmenting the graph into near-duplicates.
+    """
+    text = re.sub(r"[\s\-]+", "_", (predicate or "").strip()).upper()
+    if not _PREDICATE_RE.match(text):
+        raise ValueError(
+            f"invalid relationship {predicate!r}: use words and spaces or "
+            f"underscores only (e.g. 'has appointment', 'reports to')")
+    if text in RESERVED_PREDICATES:
+        raise ValueError(
+            f"{text!r} is a built-in relationship with its own behaviour; "
+            f"use the dedicated tool for it")
+    return text
+
+
 def check_label(label, allowed, what="label"):
     """Reject any label that is not in a known-good tuple.
 

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from llm.types import ToolCall, ToolResult, ToolSpec
+from memory.schema import FACT_ENDPOINTS
 
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict:
@@ -146,15 +147,50 @@ def _build_catalogue() -> dict[str, Tool]:
                 sid, a, title, reason, affects=affects or (),
                 made_by=made_by, supersedes=supersedes)})
 
+    add("remember_fact",
+        "Record anything you learn as a structured fact: a subject, a "
+        "relationship, and an object, each with a type you choose. Use this "
+        "for everything that is not a decision, a rule, or a task - people, "
+        "places, appointments, preferences, constraints, anything. Give "
+        "`when` (YYYY-MM-DD) whenever the fact is about a date, so later "
+        "questions about that date can find it.",
+        {"subject": _STR, "subject_type": _STR, "predicate": _STR,
+         "object": _STR, "object_type": _STR, "when": _STR},
+        ["subject", "predicate", "object"],
+        lambda s, a, sid, subject, predicate, object, subject_type="Thing",
+               object_type="Thing", when=None:
+            s.remember_fact(sid, a, subject, predicate, object,
+                            subject_type=subject_type, object_type=object_type,
+                            when=when))
+
+    add("recall_entity",
+        "Everything known about something by name, whatever type it is. Use "
+        "this when you are not sure how something was classified.",
+        {"name": _STR}, ["name"],
+        lambda s, a, sid, name: s.recall_entity(name))
+
+    add("what_is_on",
+        "Every fact dated on a given day (YYYY-MM-DD). Check this before "
+        "committing to a date, so you notice clashes.",
+        {"date": _STR}, ["date"],
+        lambda s, a, sid, date: s.what_is_on(date))
+
+    # One retire tool, not two: the model should not have to know whether a
+    # relationship belongs to the built-in set or was invented at write time.
+    def _retire(s, a, sid, rel_type, from_name, to_name, reason):
+        if rel_type.upper() in FACT_ENDPOINTS:
+            n = s.retire_fact(sid, a, rel_type.upper(), from_name, to_name, reason)
+        else:
+            n = s.retire_open_fact(sid, a, from_name, rel_type, to_name, reason)
+        return {"retired": n}
+
     add("retire_fact",
-        "Close a fact that is no longer true. Nothing is deleted; the old "
-        "version stays readable with an end date.",
-        {"rel_type": {"type": "string",
-                      "enum": ["OWNS", "WORKED_ON", "USES", "DEPENDS_ON", "AFFECTS"]},
-         "from_name": _STR, "to_name": _STR, "reason": _STR},
+        "Close a fact that is no longer true. Works for any relationship, "
+        "built-in or one you invented. Nothing is deleted; the old version "
+        "stays readable with an end date.",
+        {"rel_type": _STR, "from_name": _STR, "to_name": _STR, "reason": _STR},
         ["rel_type", "from_name", "to_name", "reason"],
-        lambda s, a, sid, rel_type, from_name, to_name, reason:
-            {"retired": s.retire_fact(sid, a, rel_type, from_name, to_name, reason)})
+        _retire)
 
     add("assert_fact",
         "Open a new fact, e.g. the new owner after a handover.",
@@ -230,17 +266,18 @@ def _build_catalogue() -> dict[str, Tool]:
 CATALOGUE = _build_catalogue()
 
 PLANNER_TOOLS = (
-    "recall_recent", "recall_related", "current_decisions", "decision_history",
-    "explain_path", "insight_sources", "record_decision", "create_task",
-    "learn_procedure",
+    "recall_recent", "recall_entity", "recall_related", "what_is_on",
+    "current_decisions", "decision_history", "explain_path", "insight_sources",
+    "remember_fact", "record_decision", "create_task", "learn_procedure",
+    "retire_fact",
 )
 
 REVIEWER_TOOLS = (
-    "claim_task", "get_task_context", "recall_related", "current_decisions",
-    "decision_history", "depends_on_chain", "dependents_of", "explain_path",
-    "critical_projects", "insight_sources", "current_facts",
-    "get_applicable_procedures", "retire_fact", "assert_fact",
-    "create_ticket", "complete_task",
+    "claim_task", "get_task_context", "recall_entity", "recall_related",
+    "what_is_on", "current_decisions", "decision_history", "depends_on_chain",
+    "dependents_of", "explain_path", "critical_projects", "insight_sources",
+    "current_facts", "get_applicable_procedures", "remember_fact",
+    "retire_fact", "assert_fact", "create_ticket", "complete_task",
 )
 
 
