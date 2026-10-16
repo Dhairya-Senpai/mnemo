@@ -4,6 +4,7 @@ Changing model or provider is a config change:
 
     LLM_PROVIDER=claude  LLM_MODEL=claude-sonnet-5-5   # default
     LLM_PROVIDER=claude  LLM_MODEL=claude-haiku-5-5    # cheaper, for bulk work
+    LLM_PROVIDER=ollama  LLM_MODEL=ornith:9b           # local, free
     LLM_PROVIDER=fake                                  # tests, zero tokens
 
 Adding a provider means writing one adapter and adding one line to
@@ -33,12 +34,19 @@ def _make_claude(**kwargs):
     return ClaudeAdapter(**kwargs)
 
 
+def _make_ollama(**kwargs):
+    # Imported here so `import llm` works without a running Ollama.
+    from .ollama import OllamaAdapter
+    return OllamaAdapter(**kwargs)
+
+
 def _make_fake(**kwargs):
     return FakeAdapter(script=kwargs.pop("script", []), **kwargs)
 
 
 _PROVIDERS = {
     "claude": _make_claude,
+    "ollama": _make_ollama,
     "fake": _make_fake,
 }
 
