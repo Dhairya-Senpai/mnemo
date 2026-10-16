@@ -313,16 +313,29 @@ def reviewer(script, **kw):
 
 
 @test
-def test_plain_answer_records_an_episodic_event():
-    before = len(STORE.recall_recent(limit=100))
+def test_both_sides_of_the_exchange_are_recorded():
+    """A conversation has to be readable back out of the graph.
+
+    Recording only the user's half would make a transcript impossible to
+    reconstruct, which is what the UI relies on instead of browser state.
+    """
+    before = len(STORE.recall_recent(limit=200))
     agent = planner([says("Nothing to do.")])
     turn = agent.run("just saying hello")
     assert turn.text == "Nothing to do."
     assert turn.steps == []
-    after = STORE.recall_recent(limit=100)
-    assert len(after) == before + 1, "the user's message must be recorded"
-    assert after[0]["summary"] == "just saying hello"
+
+    after = STORE.recall_recent(limit=200)
+    assert len(after) == before + 2, "both the message and the reply belong in the graph"
+    # recall_recent is newest first: the reply, then what prompted it.
+    assert after[0]["summary"] == "Nothing to do."
+    assert after[1]["summary"] == "just saying hello"
     assert after[0]["agent"] == "Planner"
+
+    # And the transcript reads back in conversational order, with speakers.
+    said = STORE.session_transcript(SESSION)
+    assert [s["speaker"] for s in said[-2:]] == ["user", "Planner"], said[-2:]
+    assert [s["text"] for s in said[-2:]] == ["just saying hello", "Nothing to do."]
 
 
 @test

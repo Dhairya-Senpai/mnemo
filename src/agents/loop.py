@@ -11,6 +11,7 @@ project, so `Agent.run` writes the user's message as an Event before calling
 the model, and the tools write their own events as they go.
 """
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -69,29 +70,51 @@ class Agent:
 
     def system_prompt(self) -> str:
         """Role prompt plus the facts only the runtime knows."""
+        store = self.toolbox.store
+        user = store.session_user(self.toolbox.session_id)
+        # Naming the person matters more than it looks: without a referent for
+        # "I" the agent invents a subject when recording a personal fact, and
+        # has been observed filing the user's own appointment under its own
+        # name.
+        about_user = (
+            f"You are talking to {user!r}. When they say \"I\", \"me\" or "
+            f"\"my\", that means {user!r} - use that name as the subject when "
+            f"you record something about them.\n" if user else "")
         return (
             f"{self.prompt}\n\n"
             f"You are the agent named {self.name!r}. "
             f"You are working in session {self.toolbox.session_id!r} "
-            f"for tenant {self.toolbox.store.tenant!r}.\n"
-            f"Today's date is {self.toolbox.store.now()[:10]}."
+            f"for tenant {store.tenant!r}.\n"
+            f"{about_user}"
+            f"Today's date is {store.now()[:10]}."
         )
 
-    def run(self, user_message: str, record=True) -> Turn:
+    def _remember(self, speaker, text):
+        self.toolbox.store.record_event(
+            self.toolbox.session_id, self.name, "message", text, speaker=speaker)
+
+    def run(self, user_message: str, record=True, speaker="user") -> Turn:
         """Answer one message, running tools until the model stops asking.
+
+        Both sides of the exchange are written to the graph, tagged with who
+        said them. That is what lets a conversation be read back out of
+        memory later -- by this agent in a future session, by the other
+        agent, or by a UI rebuilding a transcript.
 
         `record=False` skips the episodic write, for read-only questions
         where an event would be noise.
         """
         if record:
-            self.toolbox.store.record_event(
-                self.toolbox.session_id, self.name, "message", user_message
-            )
+            self._remember(speaker, user_message)
 
         messages: list[Message] = [Message(role="user", text=user_message)]
         specs = self.toolbox.specs()
         steps: list[Step] = []
         stopped_early = False
+        # Smaller models re-ask for things they already have. Caching the
+        # answer and saying so is cheaper than re-querying, and the nudge
+        # pushes the model to answer instead of circling.
+        seen: dict[tuple, str] = {}
 
         while True:
             response = self.llm.chat(messages, tools=specs,
@@ -100,6 +123,8 @@ class Agent:
             if not response.wants_tools:
                 messages.append(Message(role="assistant", text=response.text,
                                         provider_state=response.raw))
+                if record and response.text:
+                    self._remember(self.name, response.text)
                 return Turn(text=response.text, steps=steps, messages=messages,
                             stopped_early=stopped_early)
 
@@ -125,7 +150,19 @@ class Agent:
             else:
                 results = []
                 for call in response.tool_calls:
-                    result = self.toolbox.dispatch(call)
+                    key = (call.name, json.dumps(call.arguments, sort_keys=True,
+                                                 default=str))
+                    if key in seen:
+                        result = ToolResult(
+                            call_id=call.id,
+                            content=f"You already called {call.name} with these "
+                                    f"arguments. The answer has not changed:\n"
+                                    f"{seen[key]}\n"
+                                    f"Use it and give your answer now.")
+                    else:
+                        result = self.toolbox.dispatch(call)
+                        if not result.is_error:
+                            seen[key] = result.content
                     results.append(result)
                     steps.append(Step(name=call.name, arguments=call.arguments,
                                       result=result.content,
@@ -137,9 +174,28 @@ class Agent:
             if stopped_early:
                 # Let the model produce a final answer from what it has, then
                 # stop regardless of what it asks for next.
-                final = self.llm.chat(messages, tools=specs,
-                                      system=self.system_prompt())
-                messages.append(Message(role="assistant", text=final.text,
-                                        provider_state=final.raw))
-                return Turn(text=final.text, steps=steps, messages=messages,
+                final = self._final_answer(messages)
+                messages.append(Message(role="assistant", text=final,
+                                        provider_state=None))
+                if record and final:
+                    self._remember(self.name, final)
+                return Turn(text=final, steps=steps, messages=messages,
                             stopped_early=True)
+
+    def _final_answer(self, messages) -> str:
+        """Get prose out of the model once the tool budget is spent.
+
+        Asking again *with* tools often just produces another tool call and
+        no text, which surfaces as a silent empty reply. Dropping the tools
+        leaves the model nothing to do but answer.
+        """
+        reply = self.llm.chat(messages, tools=self.toolbox.specs(),
+                              system=self.system_prompt())
+        if reply.text:
+            return reply.text
+        closing = list(messages) + [Message(
+            role="user",
+            text="Do not call any more tools. Answer now, in plain prose, "
+                 "using only what the tools above returned.")]
+        return self.llm.chat(closing, tools=(),
+                             system=self.system_prompt()).text
