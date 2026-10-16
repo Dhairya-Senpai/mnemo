@@ -12,6 +12,49 @@ this file wins.
 
 ## 1. The organising idea
 
+### A behavioural core and an open layer
+
+The catalogues below are the **behavioural core**: types the system *does
+something with* — supersession, rule matching, atomic claiming,
+consolidation. Code depends on their shape, so they are closed.
+
+Everything else a person says is an ordinary fact, and the agent invents the
+type when it writes it. `remember_fact` creates real labels and real
+relationship types at run time, so an `Appointment`, a `Vendor` or a `Risk`
+is a first-class node that `recall_entity`, `explain_path` and centrality all
+work on, without a line of code knowing those types exist.
+
+This was not the original design, and the original design was wrong. A closed
+schema meant the agent could only remember shapes chosen in advance; told
+"I have a doctor appointment on the 20th" it replied that it would not record
+a personal matter, and the fact was lost. A memory that refuses facts is a
+form with fixed fields.
+
+The open layer is not a junk drawer, because an open fact gets the same
+discipline as a built-in one:
+
+| | |
+|---|---|
+| **Structured on arrival** | subject, predicate, object — the model must decide what relates to what, not emit prose |
+| **Entities reused** | a name that already exists is linked to, never duplicated; reuse wins over the proposed type |
+| **Versioned** | `valid_from` / `valid_to`, retired and superseded like anything else |
+| **Sourced** | `source_event` points at the episode that established it |
+| **Dated** | `when` carries the date the fact is *about*, which is what makes `what_is_on()` possible |
+
+**The security tradeoff, stated plainly.** Cypher cannot parameterise a label
+or a relationship type, so model output that becomes one must be *validated*
+rather than escaped. The closed schema used a fixed whitelist; the open layer
+uses pattern validation (`^[A-Za-z][A-Za-z0-9_]{0,30}$` for labels,
+`^[A-Z][A-Z0-9_]{0,40}$` for predicates) plus a reserved list so an open fact
+cannot impersonate a behavioural type. That is weaker than a whitelist and
+worth knowing. What it defends against is the characters that would break out
+of the identifier position; a silly-but-harmless name like `DROP_ALL` is
+allowed through deliberately, because blocking words that merely *look*
+dangerous is cargo-cult while blocking the characters that escape the
+position is the actual defence. Tested in `tests/test_open_facts.py`.
+
+### Three tiers
+
 Memory is split into three tiers governed by *different* rules. Most of the
 design follows from this one distinction.
 
@@ -105,7 +148,7 @@ is all we need; test before claiming more.)*
 |---|---|---|
 | `Agent` | `name`, `role` | — |
 | `Session` | `id`, `started_at`, `user` | Episodic |
-| `Event` | `id`, `ts`, `kind`, `summary` | Episodic |
+| `Event` | `id`, `ts`, `kind`, `summary`, `speaker` | Episodic |
 | `Person` | `name`, `role`, `aliases[]` | Semantic (identity) |
 | `Project` | `name` | Semantic (identity) |
 | `System` | `name` | Semantic (identity) |
@@ -130,6 +173,15 @@ write to the graph produces one. `kind` is a closed set: `message`, `decision`,
 `action`, `handoff`, `correction`, `consolidation`. Immutable by design: when the
 world changes we write a *new* event and never edit an old one. That immutability
 is what makes the audit trail worth trusting.
+
+`speaker` is set only on utterances, and names who said it — `"user"` when a
+person typed it, or an agent's name when an agent said it. `PERFORMED` cannot
+carry this, because an agent records the user's message and therefore performs
+an event it did not author. The distinction is what lets a conversation be read
+back out of the graph: the UI rebuilds its transcript from
+`session_transcript()` rather than from browser state, so reloading the page
+loses nothing. Events without a `speaker` are the agent's working record rather
+than anything that was said.
 
 **`Person`, `System`** — stable semantic identities. Not versioned, because the
 *entity* does not expire; its *relationships* do. Lee Park does not stop existing

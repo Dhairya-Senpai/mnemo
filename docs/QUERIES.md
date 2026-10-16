@@ -318,7 +318,80 @@ Two limitations, both reported rather than hidden:
 
 *Source: `MemoryStore.critical_projects`.*
 
-## 13. Indexes
+## 13. Remembering something nobody modelled
+
+The open layer. A label and a relationship type chosen by the model at write
+time become a real label and a real relationship type:
+
+```cypher
+CREATE (n:Appointment {name: $name, valid_from: $now})
+```
+
+```cypher
+MATCH (s) WHERE ID(s) = $sid
+MATCH (o) WHERE ID(o) = $oid
+CREATE (s)-[:HAS_APPOINTMENT {valid_from: $valid_from,
+                              source_event: $source_event,
+                              when: $when}]->(o)
+```
+
+Both the label and the relationship type are interpolated, because Cypher
+cannot parameterise either. They are therefore **validated, not escaped** —
+see `SCHEMA.md` §1 for the patterns and the reserved list. Values still travel
+as parameters.
+
+Entity reuse happens first, and deliberately ignores the type the model
+proposed:
+
+```cypher
+MATCH (n) WHERE n.name = $name RETURN ID(n), labels(n)[0] LIMIT 1
+```
+
+If "Lee Park" already exists as a `Person`, a fact about `Contact` "Lee Park"
+attaches to the existing Person. One node with many facts beats two nodes that
+never meet, and the type the model guessed is the least reliable part of its
+output.
+
+*Source: `MemoryStore.remember_fact`, `MemoryStore._resolve_entity`.*
+
+## 14. "What else is on that day?"
+
+The query that makes a memory able to notice a double-booking:
+
+```cypher
+MATCH (s)-[r]->(o)
+WHERE ID(r) >= 0 AND r.valid_to IS NULL AND r.when STARTS WITH $date
+RETURN coalesce(s.name, s.title, s.id), type(r),
+       coalesce(o.name, o.title, o.id), r.when
+ORDER BY r.when
+```
+
+Untyped on both ends and untyped on the edge: it does not care what kind of
+thing is on the calendar, which is the point. `r.valid_to IS NULL` means a
+cancelled commitment stops colliding without being deleted. `ID(r) >= 0`
+is the usual guard against existential edge matching.
+
+`coalesce(...)` across `name` / `title` / `id` is how one query reads nodes
+from the open layer and the behavioural core together — an `Appointment` has
+a name, a `Decision` has a title, an `Event` has only an id.
+
+*Source: `MemoryStore.what_is_on`.*
+
+## 15. Everything about one thing, whatever it is
+
+```cypher
+MATCH (n {name:$name})-[r]->(m) WHERE r.valid_to IS NULL
+RETURN type(r), labels(m)[0], coalesce(m.name, m.title, m.id),
+       r.when, r.valid_from
+```
+
+Takes no label. The caller asks about a name and finds out what it turned out
+to be, which is what an open schema requires: by the time you want to recall
+something, you should not have to remember how it was classified.
+
+*Source: `MemoryStore.recall_entity`.*
+
+## 16. Indexes
 
 ```cypher
 CREATE INDEX FOR (n:Event) ON (n.id)
