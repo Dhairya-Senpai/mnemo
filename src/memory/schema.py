@@ -51,6 +51,7 @@ INDEXES = [
     ("Ticket", "id"),
     ("Person", "name"), ("Project", "name"), ("System", "name"),
     ("Decision", "id"), ("Procedure", "id"), ("Insight", "id"),
+    ("Lookup", "id"),
 ]
 
 
@@ -79,7 +80,7 @@ _PREDICATE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,40}$")
 # expects properties an open fact does not have.
 RESERVED_LABELS = frozenset({
     "Agent", "Session", "Event", "Decision", "Procedure", "Insight",
-    "Task", "Ticket",
+    "Task", "Ticket", "Lookup",
 })
 
 # Likewise for edges: these carry behaviour elsewhere in the system.
@@ -87,6 +88,7 @@ RESERVED_PREDICATES = frozenset({
     "HAS_EVENT", "PERFORMED", "ABOUT", "RECORDED_IN", "LEARNED_FROM",
     "DERIVED_FROM", "MADE", "SUPERSEDES", "CREATED", "ASSIGNED_TO",
     "CONCERNS", "FILED", "BLOCKS", "CITES", "APPLIES_TO",
+    "READ", "RETURNED",
 }) | set(FACT_ENDPOINTS)
 
 

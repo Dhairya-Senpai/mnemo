@@ -60,7 +60,7 @@ design follows from this one distinction.
 
 | Tier | What it holds | Mutability |
 |---|---|---|
-| **Episodic** | What happened: sessions, events | **Immutable.** An event never stops having happened. No validity window. |
+| **Episodic** | What happened: sessions, events, and the reads behind an answer | **Immutable.** An event never stops having happened, and neither does a read. No validity window. |
 | **Semantic** | What is true: facts about the world | **Versioned.** Facts are retired, never deleted or edited in place. |
 | **Operational** | Coordination plumbing: tasks, tickets | **Mutable in place.** Not a belief about the world, so versioning it would be ceremony. Its history already lives in the episodic tier. |
 
@@ -157,6 +157,7 @@ is all we need; test before claiming more.)*
 | `Insight` | `id`, `text`, `valid_from`, `valid_to` | Semantic (**versioned**) |
 | `Task` | `id`, `status`, `created_at`, `claimed_by`, `claimed_at` | Operational |
 | `Ticket` | `id`, `title`, `created_at` | Operational |
+| `Lookup` | `id`, `tool`, `arguments`, `ts`, `agent`, `session` | Episodic |
 
 ### Why each node exists
 
@@ -220,6 +221,19 @@ receiving a prompt. See [The claim operation](#5-the-claim-operation).
 **`Ticket`** — the single Track 01 action output. One action, per the scope
 guardrail.
 
+**`Lookup`** — one read an agent made: the tool, its arguments, and the moment.
+Mutating tools already write an `Event`, so what an agent *changed* was always
+traceable; what it *read* was not, and reads are what decide an answer. Without
+this node, "why did you say that?" can only be answered from whatever the UI
+still has in memory, which is gone on reload. With it, the question is a
+traversal.
+
+It is deliberately **not** an `Event`. An agent consulting the graph is not an
+episode in the organisation's history: making it one would flood
+`recall_recent`, pull lookups into `consolidation_candidates` as raw material,
+and put the agent's own reading into the transcript the UI replays. Separate
+label, same tier, different purpose.
+
 ### Derived project state
 
 A `Project` has no `status`. "Is Spring Launch blocked?" is answered by traversing
@@ -251,6 +265,8 @@ attached, and retiring the decision updates the project's state for free.
 | `(Decision)-[:RECORDED_IN]->(Event)` | Traversable provenance for decisions; the spine of the explainability demo. |
 | `(Procedure)-[:LEARNED_FROM]->(Event)` | Same for rules: "you told me this on Oct 15, in session 1." |
 | `(Insight)-[:DERIVED_FROM]->(Event)` | Many-to-one: the episodes a consolidation summarised. It does double duty — it is both the provenance trail and the marker that those episodes have been absorbed, so candidate selection excludes them automatically rather than needing a flag. |
+| `(Event)-[:READ]->(Lookup)` | The reads behind one answer. The `Event` is the agent's own reply, so this edge is what makes "why did you say that" a traversal rather than a screenshot. Attached when the answer is written, so a turn that crashed before answering leaves its lookups unlinked — findable by `Lookup.session`, which is the honest outcome: the reads did happen. |
+| `(Lookup)-[:RETURNED]->(any)` | Which nodes a read surfaced. Resolved against the graph at write time rather than taken on trust, so a citation exists only if a node really bears that key — the trace cannot claim a fact the graph does not hold. |
 | `(Insight)-[:ABOUT]->(Person\|Project\|System)` | What a consolidation is about, so `recall_related` can lead with it. Shares the `ABOUT` type with events deliberately: "what is this node concerned with" is the same question either way. |
 
 ### Semantic world facts — every one carries `valid_from`, `valid_to`, `source_event`
@@ -459,6 +475,7 @@ here so the gaps are decided, not forgotten.
 | **`(Person)-[:MADE]->(Decision)` has no moment.** In every demo beat the decision reaches the graph through the user talking to the Planner, so the agent's `PERFORMED` edge carries the attribution and no moment asks "which person decided this?". | **Open.** Kept because a company graph that cannot say who decided something is odd, and because it costs one edge at seed time. Cut it if moment 5 does not grow a human decision-maker. |
 | **Decorative properties**: `Person.role` is displayed but never queried — it would become load-bearing if the taught rule read "notify the finance lead" rather than "notify Priya", which is a better rule anyway. `Session.user` has one value per tenant in the demo. | **Accepted.** Both cost nothing to keep. |
 | `Ticket.status` | **Cut.** Tickets are created and never updated in the demo. Removed from the catalogue above. |
+| **An agent's reads left no trace.** Every mutating tool wrote an `Event`, so what an agent changed was explainable. What it *read* — the traversals that actually decided the answer — existed only in the UI's session state and vanished on reload. The one line of the brief the build did not honour through the graph. | **Closed Oct 16, 2026** by the `Lookup` node and the `READ` / `RETURNED` edges, plus the `explain_answer` tool, which lets an agent recover its own reasoning in a later session. |
 
 ## 8. Known weak spots
 
@@ -481,6 +498,12 @@ here so the gaps are decided, not forgotten.
   practice. The alternatives considered and rejected: maintaining a parallel
   "current only" edge type (denormalisation that can drift), and computing
   centrality in Python (which would stop it being a graph algorithm).
+- **Citations are resolved by an unlabelled scan.** `record_lookup` matches
+  every harvested key against `n.name` or `n.id` with no label to narrow on,
+  so it cannot use an index and scans once per key. At demo scale (tens to
+  hundreds of nodes) this is free; on a large graph it would need the
+  candidate labels passed in. The match also inherits the same name-collision
+  caveat as the rest of the system.
 - Betweenness answers *what*, never *who*: `Person` has no incoming edges in
   this schema, so a person is never an intermediate node and always scores 0.
 
@@ -490,7 +513,7 @@ Created at seed time:
 
 - **Nodes**: `Event.id`, `Event.ts`, `Session.id`, `Task.id`, `Task.status`,
   `Ticket.id`, `Person.name`, `Project.name`, `System.name`, `Decision.id`,
-  `Procedure.id`, `Insight.id`
+  `Procedure.id`, `Insight.id`, `Lookup.id`
 - **Relationships**: none yet. The syntax is verified to work (T4a), but with
   `IS NULL` unable to use an index (T4b) and a graph this small, there is nothing
   to gain. Add one only when a query measurably needs it.

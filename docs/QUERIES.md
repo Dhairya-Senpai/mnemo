@@ -182,6 +182,9 @@ Versioned **nodes** get a traversable provenance edge like this. Versioned
 carries `source_event` as a scalar id and the event is recovered by a second
 `MATCH` on `Event.id`. That asymmetry is deliberate — see `SCHEMA.md` §2.
 
+Why an agent *answered* as it did is a separate trail, through what it read:
+section 16.
+
 *Source: tests and `MemoryStore.explain_path`.*
 
 ## 8. The informal expert — version-aware negation
@@ -391,7 +394,99 @@ something, you should not have to remember how it was classified.
 
 *Source: `MemoryStore.recall_entity`.*
 
-## 16. Indexes
+## 16. Why did you say that? The reasoning trace
+
+Section 7 explains why we *believe* a fact. This explains why an agent
+*answered* as it did, which is a different question: the answer turned on
+what the agent went and read.
+
+Each read becomes a `Lookup`, and the nodes it surfaced become `RETURNED`
+edges. Both halves are one query:
+
+```cypher
+CREATE (l:Lookup {id: $lid, tool: $tool, arguments: $args,
+                  ts: $ts, agent: $agent, session: $sid})
+WITH l UNWIND $keys AS k
+MATCH (n) WHERE (n.name = k OR n.id = k) AND NOT n:Lookup
+CREATE (l)-[:RETURNED]->(n)
+```
+
+Three things about this shape:
+
+**The `CREATE` survives an empty `$keys`.** `UNWIND []` yields no rows, so
+nothing after it runs — but the `Lookup` was already created by the clause
+before the `WITH`. Verified against FalkorDB v6.0.2, and load-bearing: a read
+that found nothing is the evidence for an answer like *"no, nothing clashes"*,
+so it has to be recorded with zero citations rather than not recorded at all.
+
+**`$keys` are resolved, not trusted.** They are names and ids harvested from
+the tool's arguments and result. The `MATCH` is what decides whether a
+citation exists, so the trace can never claim a node the graph does not hold.
+The cost is an unlabelled scan per key — free at demo scale, wrong on a large
+graph.
+
+**`NOT n:Lookup`** stops a trace citing another trace.
+
+The answer is then pointed at the reads behind it:
+
+```cypher
+MATCH (e:Event {id: $eid}) MATCH (l:Lookup) WHERE l.id IN $lids
+CREATE (e)-[:READ]->(l)
+```
+
+Finding which answer to explain is itself a traversal, and this is the part
+worth noticing — the subject is matched through the **citation edges**, not
+by searching the text of what was said:
+
+```cypher
+MATCH (e:Event)-[:READ]->(:Lookup)-[:RETURNED]->(x)
+WHERE x.name = $about OR x.id = $about
+RETURN DISTINCT e.id, e.ts, e.summary, e.speaker
+ORDER BY e.ts DESC, e.id DESC LIMIT 1
+```
+
+So "why did you block the billing release?" finds the right answer even when
+the answer never used the words that were asked about — it qualifies because
+one of its reads returned that node.
+
+Then the trace itself:
+
+```cypher
+MATCH (e:Event {id: $eid})-[:READ]->(l:Lookup)
+OPTIONAL MATCH (l)-[:RETURNED]->(n)
+RETURN l.tool, l.arguments,
+       collect(labels(n)[0] + ':' + coalesce(n.name, n.title, n.id))
+ORDER BY l.ts, l.id
+```
+
+`OPTIONAL MATCH` plus `collect` is what makes the empty case readable:
+FalkorDB drops the nulls, so a read that returned nothing comes back as `[]`
+rather than as a missing row.
+
+**What the trace deliberately stays out of.** Three existing queries would
+otherwise fill up with citations:
+
+- `recall_related` needs no change at all. Its fact queries require
+  `r.valid_from IS NOT NULL`, and a citation is episodic so it carries no
+  validity window — it is invisible to them for free.
+- `consolidation_candidates` matches `(e:Event)-[:ABOUT]->(n)`, and a
+  `Lookup` is not an `Event`, so lookups are never summarised as episodes.
+- `snapshot` had to be told, and now excludes them explicitly:
+
+```cypher
+MATCH (n) WHERE NOT n:Lookup RETURN ...
+MATCH (a)-[r]->(b)
+WHERE ID(r) >= 0 AND NOT type(r) IN ['READ', 'RETURNED'] RETURN ...
+```
+
+That panel answers "what does the agent now believe that it did not before",
+and a lookup is not a belief. Left in, one turn would bury a single real
+change under a dozen citations.
+
+*Source: `MemoryStore.record_lookup`, `link_reasoning`, `find_answer`,
+`explain_answer`, and the capture point in `Toolbox.dispatch`.*
+
+## 17. Indexes
 
 ```cypher
 CREATE INDEX FOR (n:Event) ON (n.id)

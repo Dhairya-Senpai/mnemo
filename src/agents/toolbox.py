@@ -260,6 +260,15 @@ def _build_catalogue() -> dict[str, Tool]:
             {"ticket_id": s.create_ticket(sid, a, title, blocks_project,
                                           cites_decision=cites_decision)})
 
+    add("explain_answer",
+        "Why an agent answered as it did earlier. Returns the reads behind a "
+        "past answer, in order, and which nodes each one returned. Pass "
+        "'about' with the name of a project, person, system or decision to "
+        "find the answer that was based on it; omit it for the most recent. "
+        "Use this when asked why you said something, or on what basis.",
+        {"about": _STR}, [],
+        lambda s, a, sid, about=None: s.explain_answer(about=about))
+
     return t
 
 
@@ -269,7 +278,7 @@ PLANNER_TOOLS = (
     "recall_recent", "recall_entity", "recall_related", "what_is_on",
     "current_decisions", "decision_history", "explain_path", "insight_sources",
     "remember_fact", "record_decision", "create_task", "learn_procedure",
-    "retire_fact",
+    "retire_fact", "explain_answer",
 )
 
 REVIEWER_TOOLS = (
@@ -278,7 +287,45 @@ REVIEWER_TOOLS = (
     "dependents_of", "explain_path", "critical_projects", "insight_sources",
     "current_facts", "get_applicable_procedures", "remember_fact",
     "retire_fact", "assert_fact", "create_ticket", "complete_task",
+    "explain_answer",
 )
+
+
+# Keys whose string values identify something in the graph. Harvested from a
+# tool's arguments and its result, then resolved against the graph by
+# MemoryStore.record_lookup -- a citation survives only if a node really bears
+# that key, so this list being generous costs nothing but a failed match.
+_ID_KEYS = frozenset({"name", "id", "project", "from", "to"})
+
+# Keys holding a bare list of names rather than dicts (explain_path's chain).
+_LIST_KEYS = frozenset({"chain"})
+
+# Reads that are themselves about the trace. Recording them would make every
+# question about past reasoning add to the reasoning being questioned, and
+# each explanation would cite the last one.
+_UNTRACED = frozenset({"explain_answer"})
+
+
+def citation_keys(value, _out=None) -> list[str]:
+    """Pull every identifier out of a tool's arguments or result.
+
+    Deliberately dumb and schema-free: one walker for all twenty-odd tools
+    rather than a per-tool table that would drift out of date the first time
+    a return shape changed.
+    """
+    out = [] if _out is None else _out
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            if key in _ID_KEYS and isinstance(inner, str):
+                out.append(inner)
+            elif key in _LIST_KEYS and isinstance(inner, list):
+                out.extend(x for x in inner if isinstance(x, str))
+            else:
+                citation_keys(inner, out)
+    elif isinstance(value, list):
+        for item in value:
+            citation_keys(item, out)
+    return out
 
 
 class Toolbox:
@@ -294,6 +341,9 @@ class Toolbox:
         if unknown:
             raise ValueError(f"unknown tool(s): {unknown}")
         self.names = names
+        # Lookup ids recorded during the current turn. The agent loop reads
+        # this to point its answer at the reads behind it, then clears it.
+        self.lookups: list[str] = []
 
     def specs(self) -> list[ToolSpec]:
         return [CATALOGUE[n].spec for n in self.names]
@@ -312,6 +362,11 @@ class Toolbox:
                         f"Available: {', '.join(self.names)}",
                 is_error=True,
             )
+        # A tool is a read if it did not write. Comparing MemoryStore's own
+        # write counter is self-maintaining: a hand-kept list of write tools
+        # would silently go stale the first time a tool changed, and the
+        # trace would quietly stop recording something.
+        writes_before = self.store.writes
         try:
             value = CATALOGUE[call.name].handler(
                 self.store, self.agent, self.session_id, **call.arguments
@@ -325,7 +380,27 @@ class Toolbox:
                               content=f"Error: {call.name} failed: "
                                       f"{type(e).__name__}: {e}",
                               is_error=True)
+        if self.store.writes == writes_before and call.name not in _UNTRACED:
+            # A read. Mutating tools are skipped because they already leave
+            # an Event of their own -- recording both would double-count.
+            self._trace(call, value)
         return ToolResult(call_id=call.id, content=_render(value))
+
+    def _trace(self, call: ToolCall, value) -> None:
+        """Write one Lookup for a read the agent just made.
+
+        Failing to record a trace must never fail the turn: the answer is
+        worth more than the audit of it, so this swallows its own errors.
+        """
+        try:
+            keys = citation_keys(call.arguments) + citation_keys(value)
+            self.lookups.append(self.store.record_lookup(
+                self.session_id, self.agent, call.name,
+                json.dumps(call.arguments, separators=(",", ":"), default=str),
+                keys=keys,
+            ))
+        except Exception:
+            pass
 
 
 def _render(value) -> str:

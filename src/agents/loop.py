@@ -9,6 +9,10 @@ Every turn is also recorded in the graph. An agent that thinks and acts
 without leaving an episodic trace would break the central claim of the
 project, so `Agent.run` writes the user's message as an Event before calling
 the model, and the tools write their own events as they go.
+
+Reads are recorded too. Each one becomes a Lookup node, and the answer the
+agent finally gives points at the lookups behind it, so the reasoning can be
+read back out of the graph later -- by a human, or by the agent itself.
 """
 
 import json
@@ -49,6 +53,7 @@ class Turn:
     steps: list[Step] = field(default_factory=list)
     messages: list[Message] = field(default_factory=list)
     stopped_early: bool = False       # hit the tool-call cap
+    lookups: list[str] = field(default_factory=list)   # Lookup ids behind it
 
     @property
     def tools_used(self) -> list[str]:
@@ -90,8 +95,27 @@ class Agent:
         )
 
     def _remember(self, speaker, text):
-        self.toolbox.store.record_event(
+        return self.toolbox.store.record_event(
             self.toolbox.session_id, self.name, "message", text, speaker=speaker)
+
+    def _close(self, text, steps, messages, stopped_early, record) -> Turn:
+        """Write the answer, then point it at the reads that produced it.
+
+        The READ edges are what make "why did you say that" a traversal
+        instead of a screenshot: they live in the graph, so the trace
+        outlives this process, this page and this session.
+
+        With `record=False` there is no answer node to attach them to, so
+        the lookups stay in the graph unlinked, findable by their `session`
+        property. That is the honest outcome -- the reads did happen.
+        """
+        lookups = list(self.toolbox.lookups)
+        if record and text:
+            answer_id = self._remember(self.name, text)
+            if lookups:
+                self.toolbox.store.link_reasoning(answer_id, lookups)
+        return Turn(text=text, steps=steps, messages=messages,
+                    stopped_early=stopped_early, lookups=lookups)
 
     def run(self, user_message: str, record=True, speaker="user") -> Turn:
         """Answer one message, running tools until the model stops asking.
@@ -107,6 +131,8 @@ class Agent:
         if record:
             self._remember(speaker, user_message)
 
+        # One turn, one trace. The toolbox fills this as the model reads.
+        self.toolbox.lookups.clear()
         messages: list[Message] = [Message(role="user", text=user_message)]
         specs = self.toolbox.specs()
         steps: list[Step] = []
@@ -123,10 +149,8 @@ class Agent:
             if not response.wants_tools:
                 messages.append(Message(role="assistant", text=response.text,
                                         provider_state=response.raw))
-                if record and response.text:
-                    self._remember(self.name, response.text)
-                return Turn(text=response.text, steps=steps, messages=messages,
-                            stopped_early=stopped_early)
+                return self._close(response.text, steps, messages,
+                                   stopped_early, record)
 
             # Carry provider_state so the assistant turn replays byte-identically.
             messages.append(Message(
@@ -177,10 +201,7 @@ class Agent:
                 final = self._final_answer(messages)
                 messages.append(Message(role="assistant", text=final,
                                         provider_state=None))
-                if record and final:
-                    self._remember(self.name, final)
-                return Turn(text=final, steps=steps, messages=messages,
-                            stopped_early=True)
+                return self._close(final, steps, messages, True, record)
 
     def _final_answer(self, messages) -> str:
         """Get prose out of the model once the tool budget is spent.

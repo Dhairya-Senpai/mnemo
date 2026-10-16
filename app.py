@@ -19,6 +19,7 @@ it was never in the page. That is the whole thesis, and it is checkable by
 pressing F5.
 """
 
+import json
 import os
 import sys
 import time
@@ -100,7 +101,8 @@ def run_agent(build, store, session, text, speaker="user"):
 # --------------------------------------------------------------------- state
 for key, default in (("planner_session", None), ("reviewer_session", None),
                      ("changes", None), ("reviewer_turn", None),
-                     ("last_path", None), ("busy", False)):
+                     ("last_path", None), ("busy", False),
+                     ("cited_nodes", [])):
     st.session_state.setdefault(key, default)
 
 # ------------------------------------------------------------------- sidebar
@@ -244,6 +246,44 @@ with right:
         for line in changes.lines():
             (st.success if line.startswith("+") else st.warning)(line)
 
+    # ------------------------------------------------------- why it said that
+    # Read from the graph on every render, never from st.session_state. That
+    # is the whole claim: the reasoning behind an answer outlives the page,
+    # the process and the session it was given in.
+    st.divider()
+    st.subheader("Why it answered that")
+    about = st.text_input(
+        "about", placeholder="about a project, person or system (optional)",
+        label_visibility="collapsed").strip()
+
+    trace = store.explain_answer(about=about or None)
+    if not trace:
+        st.caption("No traced answer yet."
+                   if not about else f"No answer here was based on {about!r}.")
+        st.session_state.cited_nodes = []
+    else:
+        answer = trace["answer"]
+        st.markdown(f"> {answer['text']}")
+        st.caption(f"{answer['speaker']} - {answer['ts']} - reconstructed from "
+                   f"{len(trace['steps'])} recorded read(s)")
+        for step in trace["steps"]:
+            args = ", ".join(f"{k}={v!r}" for k, v in step["arguments"].items())
+            with st.expander(f"READ  {step['tool']}({args})",
+                             expanded=len(trace["steps"]) <= 3):
+                if step["returned"]:
+                    for cited in step["returned"]:
+                        label, _, name = cited.partition(":")
+                        st.markdown(f"- `{label}` **{name}**")
+                else:
+                    st.caption("returned nothing - which is itself the reason "
+                               "for an answer like \"nothing clashes\"")
+        # Node names only; the graph view keys on them.
+        st.session_state.cited_nodes = [
+            c.partition(":")[2] for step in trace["steps"]
+            for c in step["returned"]]
+        st.toggle("Outline what it read, in the graph below",
+                  value=True, key="outline_cited")
+
 # chat input lives outside the columns; Streamlit pins it to the bottom
 prompt = st.chat_input("Tell the Planner something, or ask it a question")
 if prompt:
@@ -264,7 +304,10 @@ added = [n["name"] for n in changes.added_nodes] if changes else []
 try:
     st.graphviz_chart(
         build_dot(store, labels=VIEWS.get(view, WORLD),
-                  path=st.session_state.last_path, changed=added),
+                  path=(st.session_state.get("cited_nodes")
+                        if st.session_state.get("outline_cited")
+                        else st.session_state.last_path),
+                  changed=added),
         width="stretch", height=520)
     st.caption("Green: added by the last action. Red: an explanation chain. "
                "Dashed grey: retired, still readable - nothing is deleted.")

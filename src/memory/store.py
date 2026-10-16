@@ -22,6 +22,7 @@ Design notes worth knowing before reading the methods:
   edited in place; retiring sets `valid_to` and leaves the old edge readable.
 """
 
+import json
 import time
 import uuid
 from datetime import datetime, timezone
@@ -687,13 +688,20 @@ class MemoryStore:
         `WHERE ID(r) >= 0` is not decoration: an unreferenced edge alias is
         matched existentially in FalkorDB, which would under-report the
         parallel edges versioning creates.
+
+        The reasoning trace is excluded. This panel answers "what does the
+        agent now believe that it did not before", and a lookup is not a
+        belief -- it is the agent reading. Left in, a single turn would bury
+        one real change under a dozen citations. The trace has its own view.
         """
         nodes = self._read(
-            "MATCH (n) RETURN ID(n), labels(n)[0], "
+            "MATCH (n) WHERE NOT n:Lookup "
+            "RETURN ID(n), labels(n)[0], "
             "coalesce(n.name, n.title, n.text, n.id), n.valid_to"
         )
         edges = self._read(
-            "MATCH (a)-[r]->(b) WHERE ID(r) >= 0 "
+            "MATCH (a)-[r]->(b) "
+            "WHERE ID(r) >= 0 AND NOT type(r) IN ['READ', 'RETURNED'] "
             "RETURN ID(r), type(r), coalesce(a.name, a.title, a.text, a.id), "
             "coalesce(b.name, b.title, b.text, b.id), r.valid_to"
         )
@@ -1084,3 +1092,122 @@ class MemoryStore:
             project=project,
         )
         return [{"project": r[0], "hops": r[1]} for r in rows]
+
+    # ------------------------------------------------------------ reasoning trace
+    #
+    # Mutating tools already leave an Event behind, so what an agent *changed*
+    # has always been traceable. What it *read* was not, and reads are what
+    # decide an answer. These three methods close that gap: each read becomes
+    # a Lookup node, the nodes it returned become RETURNED edges, and the
+    # answer the agent finally gave points at the lookups behind it.
+    #
+    # The trace is deliberately NOT versioned. A citation is episodic -- the
+    # agent did read that fact at that moment, and that never stops having
+    # happened. Leaving valid_from off is also what keeps citations out of
+    # recall_related, whose fact queries require `r.valid_from IS NOT NULL`
+    # (verified: a RETURNED edge is invisible to them).
+
+    # A single lookup cites at most this many nodes. A wide recall can mention
+    # dozens, and past a handful the trace stops being an explanation and
+    # becomes a second copy of the result.
+    MAX_CITATIONS = 12
+
+    def record_lookup(self, session_id, agent, tool, arguments, keys=()):
+        """Record one read an agent made, and which nodes came back.
+
+        `keys` are names and ids lifted from the tool's result. They are
+        resolved against the graph rather than trusted: the citation exists
+        only if a node actually bears that key, so the trace cannot claim a
+        fact the graph does not hold.
+
+        One query does both halves. `CREATE ... WITH l UNWIND $keys ...`
+        still creates the Lookup when `keys` is empty (verified against
+        FalkorDB v6.0.2), which matters more than it looks -- a read that
+        found nothing is evidence for an answer like "no, nothing clashes",
+        and it has to be recorded to be cited.
+
+        The match is unlabelled, so it cannot use a label index and scans
+        once per key. At demo scale (tens to hundreds of nodes) that is
+        nothing; on a large graph it would want narrowing.
+        """
+        lid = self._new_id("look")
+        # dict.fromkeys dedupes while keeping the order the tool returned.
+        cited = [k for k in dict.fromkeys(keys) if k][:self.MAX_CITATIONS]
+        self._write(
+            "CREATE (l:Lookup {id:$lid, tool:$tool, arguments:$args, "
+            "                  ts:$ts, agent:$agent, session:$sid}) "
+            "WITH l UNWIND $keys AS k "
+            "MATCH (n) WHERE (n.name = k OR n.id = k) AND NOT n:Lookup "
+            "CREATE (l)-[:RETURNED]->(n)",
+            lid=lid, tool=tool, args=arguments, ts=self.now(),
+            agent=agent, sid=session_id, keys=cited,
+        )
+        return lid
+
+    def link_reasoning(self, event_id, lookup_ids):
+        """Point an agent's answer at the lookups that produced it."""
+        ids = [i for i in lookup_ids if i]
+        if not ids:
+            return 0
+        res = self._write(
+            "MATCH (e:Event {id:$eid}) MATCH (l:Lookup) WHERE l.id IN $lids "
+            "CREATE (e)-[:READ]->(l) RETURN count(l)",
+            eid=event_id, lids=ids,
+        )
+        return res.result_set[0][0] if res.result_set else 0
+
+    def find_answer(self, about=None):
+        """The most recent agent answer that has a trace, optionally about one thing.
+
+        With `about`, the graph does the finding: an answer qualifies because
+        one of its lookups returned a node with that name or id. So "why did
+        you block the billing release?" resolves through the citation edges
+        rather than by searching the text of what was said.
+        """
+        if about:
+            rows = self._read(
+                "MATCH (e:Event)-[:READ]->(:Lookup)-[:RETURNED]->(x) "
+                "WHERE x.name = $about OR x.id = $about "
+                "RETURN DISTINCT e.id, e.ts, e.summary, e.speaker "
+                "ORDER BY e.ts DESC, e.id DESC LIMIT 1",
+                about=about,
+            )
+        else:
+            rows = self._read(
+                "MATCH (e:Event)-[:READ]->(:Lookup) "
+                "RETURN DISTINCT e.id, e.ts, e.summary, e.speaker "
+                "ORDER BY e.ts DESC, e.id DESC LIMIT 1"
+            )
+        if not rows:
+            return None
+        r = rows[0]
+        return {"id": r[0], "ts": r[1], "text": r[2], "speaker": r[3]}
+
+    def explain_answer(self, about=None):
+        """Why an agent answered as it did: every read, in order, and its results.
+
+        This is the whole point of the trace. It is a traversal of the graph,
+        not a replay of anything held in the UI or the process -- so it
+        survives a reload, a restart, and a later session, and the agent can
+        read it back about itself.
+        """
+        answer = self.find_answer(about)
+        if not answer:
+            return None
+        rows = self._read(
+            "MATCH (e:Event {id:$eid})-[:READ]->(l:Lookup) "
+            "OPTIONAL MATCH (l)-[:RETURNED]->(n) "
+            "RETURN l.tool, l.arguments, "
+            "       collect(labels(n)[0] + ':' + coalesce(n.name, n.title, n.id)) "
+            "ORDER BY l.ts, l.id",
+            eid=answer["id"],
+        )
+        steps = []
+        for tool, args, returned in rows:
+            try:
+                parsed = json.loads(args) if args else {}
+            except (TypeError, ValueError):
+                parsed = {"raw": args}
+            steps.append({"tool": tool, "arguments": parsed,
+                          "returned": returned})
+        return {"answer": answer, "steps": steps}
