@@ -87,22 +87,32 @@ Being specific about this matters more than looking finished.
 
 **Verified by running it:**
 
-- All 101 tests pass against FalkorDB graph module v6.0.2.
+- All 133 tests pass against FalkorDB graph module v6.0.2.
 - Every FalkorDB behaviour claimed in `SCHEMA.md` and `QUERIES.md` was probed
   directly; the probes are reproducible.
 - The concurrency numbers were measured during an actual run, with query
   counters inside `MemoryStore`. No number in this repository is estimated.
 - The MCP server was driven over real stdio by the MCP SDK's own client.
+- **A live model has driven the agent loop.** `ornith:9b` through Ollama chose
+  its own tools, traversed the dependency chain and answered from the graph,
+  then recovered its own reasoning in a separate session via `explain_answer`
+  (16 October 2026).
 
 **Not verified:**
 
 - **No request has ever been sent to the Anthropic API.** There is no API key
   on the development machine. The Claude adapter's translation layer is
-  unit-tested against a stub client, but the live wire format is unconfirmed,
-  and no real model has ever chosen a tool in this system. Every agent test
-  uses a scripted fake adapter.
-- Consolidation **quality** is therefore unknown. The mechanism is tested;
-  whether a real model writes a useful standing fact is not.
+  unit-tested against a stub client, but its live wire format is unconfirmed.
+  The Ollama adapter is the one proven against a real model; the Claude one is
+  not.
+- **Every automated test uses a scripted fake adapter.** The live-model runs
+  above were done by hand, not in the test suite, because a test that needs a
+  model running locally is not a test that passes anywhere.
+- Consolidation **quality** is unknown. The mechanism is tested; whether a
+  real model writes a useful standing fact has not been checked.
+- Asked to explain itself, the live model **paraphrased the stored answer**
+  rather than naming the queries behind it, as its role prompt asks. The trace
+  it read is exact; a 9B model's use of it is imperfect.
 - The MCP server has not been tested against a third-party MCP host.
 - The concurrency figures are from one machine and one container. They are a
   correctness result with timings attached, not a benchmark.
@@ -118,8 +128,10 @@ python tests/test_llm_and_agent.py
 python tests/test_handoff.py
 python tests/test_step6.py
 python tests/test_mcp_and_algorithm.py
+python tests/test_open_facts.py
+python tests/test_trace.py
 python scripts/demo_isolation.py
 python scripts/demo_concurrency.py
 ```
 
-Last updated: 15 October 2026.
+Last updated: 16 October 2026.
