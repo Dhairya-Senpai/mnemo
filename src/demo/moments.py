@@ -35,7 +35,7 @@ from llm import FakeAdapter, calls, says  # noqa: E402
 from llm.fake import last_tool_result  # noqa: E402
 from memory import MemoryStore  # noqa: E402
 
-DELAY = "Delay Spring Launch to May 15"
+DELAY = "Delay Spring Launch to May 15, 2027"
 
 
 # --------------------------------------------------------------------- types
@@ -114,7 +114,7 @@ def m1_record_delay(store):
              "replaces, and left the Reviewer a task to work out the fallout."),
     ]
     turn = build_planner(store, session, FakeAdapter(script)).run(
-        "We need to delay the Spring Launch to May 15 - Ledger Migration is "
+        "We need to delay the Spring Launch to May 15, 2027 - Ledger Migration is "
         "blocked. Someone should check what that breaks.")
     return MomentResult(turn.text, _steps(turn), facts={"session": session})
 
@@ -151,7 +151,7 @@ def m3_block_the_release(store):
             "title": "Billing v2 blocked by the Spring Launch delay",
             "blocks_project": "Billing v2",
             "cites_decision": did}),
-        says("No. Billing v2 sits behind Spring Launch, which is delayed to May 15 "
+        says("No. Billing v2 sits behind Spring Launch, which is delayed to May 15, 2027 "
              "because Ledger Migration is blocked. I've filed a ticket citing that "
              "decision."),
     ]
@@ -201,17 +201,17 @@ def m5a_supersede(store):
     script = [
         calls("current_decisions", {"project": "Spring Launch"}),
         calls("record_decision", {
-            "title": "Delay Spring Launch to June 1",
+            "title": "Delay Spring Launch to June 1, 2027",
             "reason": "Ledger Migration slipped again",
             "affects": ["Spring Launch"],
             "supersedes": old}),
         lambda m, t, s: calls("decision_history", {
             "decision_id": json.loads(last_tool_result(m))["decision_id"]}),
-        says("June 1 is now the current date. The May 15 decision is retired but "
+        says("June 1, 2027 is now the current date. The May 15, 2027 decision is retired but "
              "still readable, and the chain back through it is intact."),
     ]
     turn = build_planner(store, session, FakeAdapter(script)).run(
-        "Ledger Migration slipped again. Push the launch to June 1.")
+        "Ledger Migration slipped again. Push the launch to June 1, 2027.")
     return MomentResult(turn.text, _steps(turn),
                         note="Nothing was deleted. The old decision has an end "
                              "date and a SUPERSEDES link pointing at it.")

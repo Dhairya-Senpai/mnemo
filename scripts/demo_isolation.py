@@ -27,7 +27,7 @@ from memory import MemoryStore  # noqa: E402
 
 QUESTION = "Can we ship Billing v2?"
 
-DELAY_TITLE = "Delay Spring Launch to May 15"
+DELAY_TITLE = "Delay Spring Launch to May 15, 2027"
 
 
 def apply_launch_delay(store):
