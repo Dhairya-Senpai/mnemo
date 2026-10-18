@@ -1,0 +1,39 @@
+# Give the bundled Ollama your NVIDIA GPU.
+#
+#     docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+#
+# Needs the NVIDIA Container Toolkit. Check it first -- this one command
+# tells you whether the whole thing will work:
+#
+#     docker run --rm --gpus all --entrypoint /usr/bin/nvidia-smi \
+#       ollama/ollama:latest -L
+#
+# If that prints your GPU, this file will work. If it errors, use the plain
+# `docker compose up` (slow, see below) or docker-compose.host-ollama.yml.
+#
+# ---------------------------------------------------------------------------
+# Why this is a separate file rather than a block uncommented in the main
+# one: a `deploy.resources.reservations.devices` entry that cannot be
+# satisfied does not degrade to CPU, it stops the stack from starting. Put
+# it in docker-compose.yml and every judge without an NVIDIA card gets an
+# error instead of an app. Here it is opt-in, and the default stays the one
+# that runs anywhere.
+#
+# It is worth opting in to. On CPU this project's agent prompt -- roughly
+# 4,300 tokens -- was measured processing at 16.8 tokens/second, which is
+# about four minutes before the first of several model calls even starts
+# generating. The same work on the GPU is seconds.
+#
+# Not for a Mac: Docker on macOS cannot pass Metal into its Linux VM at all.
+# Use docker-compose.host-ollama.yml there.
+# ---------------------------------------------------------------------------
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
