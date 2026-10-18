@@ -516,6 +516,62 @@ def test_a_delete_leaves_other_conversations_alone():
     assert keep in [x["id"] for x in store.list_sessions()]
 
 
+# ------------------------------------------- rules that belong to no project
+@test
+def test_a_rule_scoped_to_nothing_is_still_reachable():
+    """The orphaned standing rule.
+
+    PROCEDURE_SCOPES allows only Project and System, so a rule about a topic
+    -- "prefer Java for coding" -- is stored with no APPLIES_TO edge and used
+    to be unreachable by the only tool that reads rules, while
+    learn_procedure returned a perfectly good id and the agent reported that
+    it had saved a standing rule.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-rule")
+    store.learn_procedure(sid, "Planner", "prefer Java for coding",
+                          "coding, programming", "use Java")
+
+    assert [r["name"] for r in store.get_applicable_procedures()] == \
+        ["prefer Java for coding"], "a rule with no scope vanished"
+    scoped = store.get_applicable_procedures("Project", "anything")
+    assert [r["matched"] for r in scoped] == ["applies everywhere"], scoped
+
+
+@test
+def test_standing_rules_reach_the_agent_without_a_tool_call():
+    """A rule has to apply on the turns the model sees no reason to look.
+
+    Asked to write hello world, a model taught "prefer Java" called no tools
+    at all and answered in Python: it did not think the question needed
+    remembering. So the rules are read from the graph into every system
+    prompt rather than waiting to be fetched.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-inject")
+    store.learn_procedure(sid, "Planner", "prefer Java for coding",
+                          "coding, programming", "use Java")
+
+    agent = build_planner(store, sid, FakeAdapter([says("ok")]))
+    assert "prefer Java for coding" in agent.system_prompt()
+    assert "use Java" in agent.system_prompt()
+
+
+@test
+def test_retiring_a_rule_takes_it_out_of_the_prompt():
+    """Which is what keeps this memory rather than a hardcoded instruction."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-retire-rule")
+    pid = store.learn_procedure(sid, "Planner", "prefer Java for coding",
+                                "coding", "use Java")
+    agent = build_planner(store, sid, FakeAdapter([says("ok")]))
+    assert "prefer Java" in agent.system_prompt()
+
+    store.retire_procedure(sid, "Planner", pid, "changed my mind")
+    assert "prefer Java" not in agent.system_prompt(), \
+        "a retired rule is still being pushed at the model"
+
+
 # ------------------------------------------------------------------- report
 if __name__ == "__main__":
     try:

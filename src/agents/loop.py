@@ -64,7 +64,8 @@ class Agent:
     """One named agent with a role prompt, an adapter, and a toolbox."""
 
     def __init__(self, name, toolbox, llm: LLMAdapter, prompt=None,
-                 prompt_name=None, max_tool_calls=DEFAULT_MAX_TOOL_CALLS):
+                 prompt_name=None, max_tool_calls=DEFAULT_MAX_TOOL_CALLS,
+                 standing_rules=False):
         if prompt is None and prompt_name is None:
             raise ValueError("pass prompt or prompt_name")
         self.name = name
@@ -72,6 +73,14 @@ class Agent:
         self.llm = llm
         self.prompt = prompt if prompt is not None else load_prompt(prompt_name)
         self.max_tool_calls = max_tool_calls
+        # Off by default, and deliberately. An agent that is handed its rules
+        # has not recalled them, and the Reviewer exists to show that an
+        # agent can work from the graph alone -- find_prompt_leaks checks
+        # exactly that, and would count an injected rule as having been told.
+        # The Planner talks to a person in free-form chat, where a small model
+        # will not think to look; the Reviewer gets one fixed trigger and must
+        # read everything, including its rules.
+        self.standing_rules = standing_rules
 
     def system_prompt(self) -> str:
         """Role prompt plus the facts only the runtime knows."""
@@ -91,8 +100,40 @@ class Agent:
             f"You are working in session {self.toolbox.session_id!r} "
             f"for tenant {store.tenant!r}.\n"
             f"{about_user}"
-            f"Today's date is {store.now()[:10]}."
+            f"Today's date is {store.now()[:10]}.\n"
+            f"{self._standing_rules()}"
         )
+
+    # A rule the person taught once has to apply every time, including on the
+    # turns where the model sees no reason to consult its memory. Leaving that
+    # to a tool call does not work: asked to write hello world, a model that
+    # had been taught "prefer Java" called no tools at all and answered in
+    # Python, because it did not think the question needed remembering.
+    #
+    # So the rules are read from the graph on every turn and put in front of
+    # it. This is still graph-backed memory -- the prompt is rebuilt from a
+    # FalkorDB query each time, and retiring a rule removes it from the next
+    # turn -- it just does not depend on the model electing to look.
+    MAX_STANDING_RULES = 10
+
+    def _standing_rules(self) -> str:
+        """Live procedural memory, rendered into the prompt."""
+        if not self.standing_rules:
+            return ""
+        try:
+            rules = self.toolbox.store.get_applicable_procedures()
+        except Exception:
+            return ""                      # never break a turn over this
+        if not rules:
+            return ""
+        lines = "\n".join(
+            f"- {r['name']}: {r['action']}"
+            + (f" (applies when: {r['trigger']})" if r.get("trigger") else "")
+            for r in rules[:self.MAX_STANDING_RULES])
+        return (
+            "\nStanding rules this person has taught you. They apply whether "
+            "or not\nanything in the message mentions them, and they are not "
+            "to be restated\nback at the person as news:\n" + lines + "\n")
 
     def _remember(self, speaker, text):
         return self.toolbox.store.record_event(

@@ -252,11 +252,14 @@ def _build_catalogue() -> dict[str, Tool]:
                            + [("Project", x) for x in (applies_to_projects or [])])})
 
     add("get_applicable_procedures",
-        "Rules in force for an entity, including rules reached through the "
-        "systems a project uses. Check this before acting.",
+        "Standing rules the person has taught you. Call it with no arguments "
+        "to see every rule in force; pass a project or system to also get the "
+        "rules reached through what that project uses. Rules apply whether or "
+        "not anyone mentions them, so check before answering or acting.",
         {"label": {"type": "string", "enum": ["Project", "System"]}, "name": _STR},
-        ["label", "name"],
-        lambda s, a, sid, label, name: s.get_applicable_procedures(label, name))
+        [],
+        lambda s, a, sid, label=None, name=None:
+            s.get_applicable_procedures(label, name))
 
     add("create_ticket",
         "File a ticket recording that something is blocked. Always cite the "

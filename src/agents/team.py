@@ -34,6 +34,10 @@ REVIEWER_TRIGGER = (
 
 
 def build_planner(store, session_id, llm, prompt=None, **kwargs) -> Agent:
+    # The Planner carries its standing rules in context. It answers whatever a
+    # person types, and a rule taught once has to hold on the turns where the
+    # model sees no reason to consult its memory at all.
+    kwargs.setdefault("standing_rules", True)
     return Agent(
         name=PLANNER,
         toolbox=Toolbox(store, PLANNER, session_id, allowed=PLANNER_TOOLS),

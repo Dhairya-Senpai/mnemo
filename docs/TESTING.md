@@ -169,6 +169,52 @@ had to be closed one at a time, each found only by use.
 
 ---
 
+## 3b. The standing rule that was stored and then orphaned
+
+**Found by:** "i like to code in java and prefer any coding in that
+language", then in a new chat, "write a code to print hello world". The
+answer came back in Python, with a tour of four other languages.
+
+Two independent failures, stacked.
+
+**The rule was unreachable.** `learn_procedure` stored a correct `Procedure`
+-- trigger "coding, programming, implementation", action "use Java" -- with
+**zero `APPLIES_TO` edges**, because `PROCEDURE_SCOPES` permits only
+`Project` and `System` and a rule about a topic has neither.
+`get_applicable_procedures` matches only through `APPLIES_TO`, so all four
+plausible lookups returned nothing. Meanwhile `learn_procedure` returned a
+perfectly good id, so the agent truthfully reported that it had saved a
+standing rule it could never find again. The whole procedural mechanism was
+built around the company world, where every rule attaches to a project.
+
+**And it never looked.** The trace for the hello-world answer was empty: no
+tools at all. The model read it as a generic coding question and answered
+from training.
+
+**Changed:** a rule with no scope is one that holds everywhere, not a broken
+one, so `get_applicable_procedures` returns unscoped rules alongside scoped
+ones and can be called with no entity at all.
+
+That made the rule reachable and changed nothing, because the model still
+did not look. Prompting it to look did not work either -- the third time
+prompt guidance failed with this model. So the Planner now reads its live
+rules from the graph into every system prompt. Retiring a rule removes it
+from the next turn, which is what keeps this memory rather than a hardcoded
+instruction:
+
+```
+rule live     -> JAVA
+rule retired  -> not java
+```
+
+**The Reviewer deliberately does not get this.** `find_prompt_leaks` exists
+to prove the Reviewer was told nothing, and an injected rule would be
+something it was told -- demo moment 4 turns on a rule firing *without*
+being restated. The existing test caught this immediately when injection was
+first applied to both agents. The Planner answers free-form input from a
+person and carries its rules; the Reviewer gets one fixed trigger and reads
+everything, rules included.
+
 ## 4. Still open
 
 - **A person's own words are still recalled after the fact is retired.**

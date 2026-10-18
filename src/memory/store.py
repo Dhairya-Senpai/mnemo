@@ -968,31 +968,60 @@ class MemoryStore:
             )
         return pid
 
-    def get_applicable_procedures(self, label, name):
-        """Rules in force for an entity, directly or via the project's systems.
+    def get_applicable_procedures(self, label=None, name=None):
+        """Rules in force: for one entity, plus the ones that hold everywhere.
 
-        The second hop is what makes the taught rule fire without being
-        repeated: a rule scoped to a finance System also applies to any Project
-        that currently USES it.
+        Three kinds come back.
+
+        * Scoped directly to this entity.
+        * Scoped to a System the Project currently USES. That second hop is
+          what makes a rule taught about one system fire for a project that
+          merely depends on it, without anyone repeating the rule.
+        * Scoped to nothing at all.
+
+        The third kind used to be unreachable, and silently so.
+        PROCEDURE_SCOPES allows only Project and System, so a rule about a
+        topic -- "prefer Java for coding" -- is stored with no APPLIES_TO
+        edge and can never be matched by anything, while learn_procedure
+        hands back a perfectly good id and the agent reports that it saved a
+        standing rule. The promise was real and the rule was orphaned. A rule
+        anchored to nothing is one that holds everywhere, not a broken one.
+
+        Called with no entity, this returns every live rule, which is how an
+        agent asks "what standing rules are there?" without first having to
+        guess a project or system name to hang the question on.
         """
-        check_label(label, PROCEDURE_SCOPES, "procedure scope")
-        direct = self._read(
-            f"MATCH (p:Procedure)-[s:APPLIES_TO]->(n:{label} {{name:$name}}) "
-            f"WHERE p.valid_to IS NULL AND s.valid_to IS NULL "
-            f"RETURN p.id, p.name, p.trigger, p.action, 'direct'",
-            name=name,
-        )
-        indirect = []
-        if label == "Project":
-            indirect = self._read(
-                "MATCH (p:Procedure)-[s:APPLIES_TO]->(sys:System)<-[u:USES]-"
-                "(proj:Project {name:$name}) "
-                "WHERE p.valid_to IS NULL AND s.valid_to IS NULL AND u.valid_to IS NULL "
-                "RETURN p.id, p.name, p.trigger, p.action, 'via system ' + sys.name",
-                name=name,
-            )
+        rows = []
+        if label and name:
+            check_label(label, PROCEDURE_SCOPES, "procedure scope")
+            rows += list(self._read(
+                f"MATCH (p:Procedure)-[s:APPLIES_TO]->(n:{label} {{name:$name}}) "
+                f"WHERE p.valid_to IS NULL AND s.valid_to IS NULL "
+                f"RETURN p.id, p.name, p.trigger, p.action, 'direct'",
+                name=name))
+            if label == "Project":
+                rows += list(self._read(
+                    "MATCH (p:Procedure)-[s:APPLIES_TO]->(sys:System)<-[u:USES]-"
+                    "(proj:Project {name:$name}) "
+                    "WHERE p.valid_to IS NULL AND s.valid_to IS NULL "
+                    "  AND u.valid_to IS NULL "
+                    "RETURN p.id, p.name, p.trigger, p.action, "
+                    "       'via system ' + sys.name",
+                    name=name))
+            # A rule with no live scope edge is not scoped to this entity --
+            # it is scoped to nothing, so it applies here as well.
+            rows += list(self._read(
+                "MATCH (p:Procedure) WHERE p.valid_to IS NULL "
+                "OPTIONAL MATCH (p)-[s:APPLIES_TO]->() WHERE s.valid_to IS NULL "
+                "WITH p, count(s) AS scopes WHERE scopes = 0 "
+                "RETURN p.id, p.name, p.trigger, p.action, 'applies everywhere'"))
+        else:
+            rows += list(self._read(
+                "MATCH (p:Procedure) WHERE p.valid_to IS NULL "
+                "RETURN p.id, p.name, p.trigger, p.action, 'standing rule'"))
+
         seen, out = set(), []
-        for r in list(direct) + list(indirect):
+        for r in rows:
             if r[0] in seen:
                 continue
             seen.add(r[0])
