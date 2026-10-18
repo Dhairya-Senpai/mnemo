@@ -92,12 +92,39 @@ services:
         # registry, so without this the stack cannot start offline: the pull
         # fails, this container exits non-zero, and `app` waits on it
         # completing successfully, so the chat window never opens.
-        if ollama list | awk 'NR > 1 {print $$1}' | grep -qx "$$WANT"; then
+        have_it() { ollama list | awk 'NR > 1 {print $$1}' | grep -qx "$$WANT"; }
+
+        if have_it; then
           echo "$$WANT is already here. Skipping the download."
         else
           echo "Pulling $$WANT - about 5.6 GB for the default, once."
           echo "It goes into a named volume, so later runs skip this."
-          ollama pull "$$MODEL"
+          # Retried, because a multi-gigabyte pull dropping partway through
+          # with `Error: EOF` is ordinary and resuming costs nothing: the
+          # layers already written are kept. Observed here on the first
+          # attempt at ornith:9b.
+          n=1
+          while [ "$$n" -le 3 ]; do
+            ollama pull "$$MODEL" && break
+            echo "Attempt $$n failed. Retrying..."
+            n=$$((n + 1))
+            sleep 5
+          done
+        fi
+
+        # Verify rather than assume. `ollama pull` exits non-zero when it
+        # fails, but an earlier version of this step ignored that and printed
+        # "Model ready." over the top of `Error: EOF` -- so the stack started
+        # with no model and every turn failed in the UI instead of here,
+        # where the cause is visible. Checking the volume tests the OUTCOME,
+        # which is the only thing `app` actually depends on.
+        if ! have_it; then
+          echo ""
+          echo "ERROR: $$WANT is still not in the volume."
+          echo "The stack is stopping here rather than starting a chat app"
+          echo "with no model behind it. Check the network and run again;"
+          echo "whatever downloaded is kept, so a retry resumes."
+          exit 1
         fi
         echo "Model ready."
     restart: "no"
