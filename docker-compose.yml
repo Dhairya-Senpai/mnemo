@@ -6,9 +6,14 @@
 # Then open http://localhost:8501. FalkorDB Browser is on :3000.
 #
 # The first run downloads the model — about 5.6 GB for the default — into a
-# named volume, so it happens once. Later runs start in seconds.
+# named volume. Every run after that checks the volume first and skips the
+# download, so a second `up` takes about seven seconds and works offline.
 #
 # Nothing here needs an API key. The model runs locally.
+#
+# One thing that will stop this dead: something else already on host port
+# 6379 or 3000. A standalone `falkordb` container left running from local
+# development is the usual culprit — `docker stop falkordb` first.
 
 name: mnemo
 
@@ -75,8 +80,25 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        echo "Pulling ${MNEMO_MODEL:-ornith:9b} — about 5.6 GB on the first run."
-        ollama pull "${MNEMO_MODEL:-ornith:9b}"
+        MODEL="${MNEMO_MODEL:-ornith:9b}"
+        # Ollama stores an untagged name as `name:latest`, so compare against
+        # the same form the listing prints or an untagged MNEMO_MODEL never
+        # matches and the model is fetched again on every run.
+        case "$$MODEL" in *:*) WANT="$$MODEL" ;; *) WANT="$$MODEL:latest" ;; esac
+
+        # Ask what is already in the volume before reaching for the network.
+        # `ollama pull` on a model you already have is not a re-download --
+        # it checks digests and skips the layers -- but it still contacts the
+        # registry, so without this the stack cannot start offline: the pull
+        # fails, this container exits non-zero, and `app` waits on it
+        # completing successfully, so the chat window never opens.
+        if ollama list | awk 'NR > 1 {print $$1}' | grep -qx "$$WANT"; then
+          echo "$$WANT is already here. Skipping the download."
+        else
+          echo "Pulling $$WANT - about 5.6 GB for the default, once."
+          echo "It goes into a named volume, so later runs skip this."
+          ollama pull "$$MODEL"
+        fi
         echo "Model ready."
     restart: "no"
 
