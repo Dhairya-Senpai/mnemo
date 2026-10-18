@@ -985,6 +985,31 @@ Reviewer   (section 3k)                                  leaks: []
 Three agents, none of which saw the conversation, each told the same
 single trigger sentence.
 
+## 3m. Three conversations in the graph, none on screen
+
+**Found by:** seeding the demo workspace and opening it.
+
+`scripts/seed_demo.py` wrote three full conversations. The sidebar was
+empty. The graph was right and the UI disagreed with it.
+
+The sidebar filtered on both the user *and* the shape of the session id:
+
+```python
+sessions = [s for s in store.list_sessions(limit=40)
+            if s["user"] == USER and s["id"].startswith(SESSION_PREFIX)
+            and s["turns"]]
+```
+
+`SESSION_PREFIX` is `"sess-you-"`, and the seeder used readable ids like
+`demo-day1-lift`. The prefix check was also **redundant** — the agents'
+own sessions already carry `user='reviewer'`, `'coder'`, `'archivist'`, so
+the user filter alone separates them. All the id check added was a silent
+rule that a conversation this app did not create itself does not exist.
+
+That is the same shape as the graph view that could not draw a `Topic`
+(3i): a filter written for one path, quietly excluding every other. Both
+`current_session` and the sidebar now match on `user` only.
+
 ## 4. Still open
 
 - **A person's own words are still recalled after the fact is retired.**

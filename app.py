@@ -324,8 +324,10 @@ def current_session(store, key, user, prefix):
     """
     if st.session_state.get(key):
         return st.session_state[key]
+    # Same reasoning as the sidebar: match the user, not the id shape, or a
+    # conversation written by anything but this app is invisible here too.
     existing = [s for s in store.list_sessions(limit=50)
-                if s["user"] == user and s["id"].startswith(prefix)]
+                if s["user"] == user and s["turns"]]
     sid = existing[0]["id"] if existing else store.start_session(
         user=user, session_id=f"{prefix}{int(time.time())}")
     st.session_state[key] = sid
@@ -740,9 +742,15 @@ with st.sidebar:
     # A session nobody has spoken in has no title and nothing to return to,
     # and listing the one just opened put a second "New chat" directly under
     # the button that makes them. The button is the only way in.
+    # Filtered on `user`, not on the id. The prefix check that used to be
+    # here was redundant -- the agents' own sessions already carry
+    # user='reviewer', 'coder', 'archivist' -- and it silently hid any
+    # conversation this app did not create itself. A workspace seeded by
+    # scripts/seed_demo.py had three full conversations in the graph and an
+    # empty sidebar, which is the UI disagreeing with the database about
+    # what exists.
     sessions = [s for s in store.list_sessions(limit=40)
-                if s["user"] == USER and s["id"].startswith(SESSION_PREFIX)
-                and s["turns"]]
+                if s["user"] == USER and s["turns"]]
 
     for sess in sessions:
         sid = sess["id"]
