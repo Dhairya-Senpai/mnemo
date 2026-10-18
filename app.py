@@ -42,7 +42,7 @@ from demo.falkor_canvas import (  # noqa: E402
     graph_payload,
     legend as graph_legend,
 )
-from demo.graphview import VIEWS, WORLD  # noqa: E402
+from demo.graphview import ALL, VIEWS, WORLD  # noqa: E402
 from llm import get_adapter  # noqa: E402
 from memory import (MemoryStore, delete_tenant, diff_snapshots,
                     list_tenants, rename_tenant)  # noqa: E402
@@ -476,17 +476,18 @@ def _draw_legend(key):
 
 @st.dialog("The graph", width="large")
 def window_graph():
-    view = st.selectbox("View", list(VIEWS), index=0,
-                        label_visibility="collapsed",
-                        help="\"Conversation and subjects\" is the one that "
-                             "shows what was said joined to what it was "
-                             "about. \"Everything\" filters nothing at all, "
-                             "which is the same picture FalkorDB Browser "
-                             "draws from the same component.")
+    # One graph, unfiltered. The view picker was a leftover from the
+    # company-world demo, where hiding the episodic tier made the dozen
+    # business nodes legible. It stopped being right once the conversation
+    # became part of the graph: the interesting structure *is* the episodes
+    # joined to their subjects, and a filter that hides them by default is
+    # the reason this looked emptier than FalkorDB Browser showing the same
+    # database. The allow-lists survive in graphview.VIEWS for the offline
+    # Graphviz renderer.
     changes = st.session_state.changes
     changed = [n["name"] for n in changes.added_nodes] if changes else []
     try:
-        payload = graph_payload(store, labels=VIEWS[view],
+        payload = graph_payload(store, labels=ALL,
                                 cited=st.session_state.get("cited_nodes") or [],
                                 changed=changed)
         components.html(canvas_html(payload, height=520, zoom_floor=1.15),

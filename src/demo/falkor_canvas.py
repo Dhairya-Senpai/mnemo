@@ -91,8 +91,24 @@ def graph_payload(store, labels, cited=(), changed=(), max_nodes=120):
         f"       coalesce(n.name, n.title, n.text, n.id), n.valid_to "
         f"LIMIT {int(max_nodes)}"
     )
+    # An Event has no name, so it was captioned by its id --
+    # `evt-065e1752121669-e791b6`, which is unreadable and identical-looking
+    # across fifty nodes. Numbering them in the order they happened says the
+    # one thing about an episode that a picture can usefully carry: when it
+    # was, relative to everything else. The order is (ts, id) for the reason
+    # given in SCHEMA.md -- second-precision timestamps tie within a turn,
+    # and ids carry a microsecond prefix that breaks the tie correctly.
+    ordinals = {
+        row[0]: (i + 1, row[1])
+        for i, row in enumerate(store._read(
+            "MATCH (e:Event) RETURN ID(e), e.speaker ORDER BY e.ts, e.id"))
+    }
+
     nodes, known = [], set()
     for node_id, label, name, valid_to in rows:
+        if label == "Event" and node_id in ordinals:
+            seq, speaker = ordinals[node_id]
+            name = f"#{seq} {speaker}" if speaker else f"#{seq}"
         known.add(node_id)
         retired = valid_to is not None
         is_cited, is_changed = name in cited, name in changed
