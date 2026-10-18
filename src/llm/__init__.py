@@ -4,21 +4,21 @@ Changing model or provider is a config change:
 
     LLM_PROVIDER=ollama  LLM_MODEL=ornith:9b     # default; local, free
     LLM_PROVIDER=ollama  LLM_MODEL=llama3.2:3b   # smaller, faster, weaker
-    LLM_PROVIDER=fake                            # scripted, zero tokens
 
 Adding a provider means writing one adapter and adding one line to
 `_PROVIDERS`. No agent code changes -- nothing above this package names a
 provider, which is the whole point of the layer.
 
-A hosted adapter (Anthropic, OpenAI) lived here until it was removed: it was
-dead weight, because no request was ever sent through it. The interface it
-proved is still the interface, and `base.py` records what a new one owes.
+Two other adapters lived here and were both removed on 18 October: a hosted
+(Anthropic) one, because no request was ever sent through it, and a scripted
+one used by the tests and by a demo replayer. Writing them is what forced
+`base.py` to be genuinely provider-neutral; that boundary is what remains,
+and it is what a new adapter owes.
 """
 
 import os
 
 from .base import LLMAdapter, LLMError
-from .fake import FakeAdapter, calls, calls_many, says
 from .types import (
     STOP_END_TURN,
     STOP_MAX_TOKENS,
@@ -38,13 +38,8 @@ def _make_ollama(**kwargs):
     return OllamaAdapter(**kwargs)
 
 
-def _make_fake(**kwargs):
-    return FakeAdapter(script=kwargs.pop("script", []), **kwargs)
-
-
 _PROVIDERS = {
     "ollama": _make_ollama,
-    "fake": _make_fake,
 }
 
 
@@ -60,7 +55,6 @@ def get_adapter(provider: str | None = None, **kwargs) -> LLMAdapter:
 
 __all__ = [
     "LLMAdapter", "LLMError", "LLMResponse", "Message", "ToolCall",
-    "ToolResult", "ToolSpec", "FakeAdapter", "get_adapter",
-    "says", "calls", "calls_many",
+    "ToolResult", "ToolSpec", "get_adapter",
     "STOP_END_TURN", "STOP_TOOL_USE", "STOP_MAX_TOKENS", "STOP_REFUSAL",
 ]

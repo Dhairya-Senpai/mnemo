@@ -35,7 +35,6 @@ from agents import (  # noqa: E402
     build_planner,
     build_reviewer,
 )
-from demo import BY_KEY, MOMENTS, reset_world  # noqa: E402
 from demo.falkor_canvas import (  # noqa: E402
     canvas_html,
     graph_payload,
@@ -252,12 +251,6 @@ SESSION_PREFIX = "sess-you-"
 # calls and forces a final answer when the budget runs out, so a low cap is
 # survivable - but this leaves enough room to finish the thought.
 MAX_TOOL_CALLS = 14
-
-# The scenario replayer and the graph reset still work and are still wired up
-# below; they are simply not shown. They belong to a demo rig, and a demo rig
-# in the sidebar is why this did not read as a chat app. Flip to True.
-SHOW_DEMO_CONTROLS = False
-
 
 @st.cache_resource
 def get_store(tenant):
@@ -842,29 +835,6 @@ with st.sidebar:
                         st.session_state.menu_seq = \
                             st.session_state.get("menu_seq", 0) + 1
                         st.rerun()
-
-    if SHOW_DEMO_CONTROLS:
-        st.divider()
-        if st.button("Reset both graphs", width="stretch"):
-            with st.spinner("reseeding..."):
-                reset_world()
-            for key in ("planner_session", "reviewer_session", "changes",
-                        "reviewer_turn", "last_path", "planner_steps"):
-                st.session_state[key] = None
-            st.cache_resource.clear()
-            st.rerun()
-        scenario = st.selectbox(
-            "Example scenario", [m.key for m in MOMENTS], index=None,
-            format_func=lambda k: f"{BY_KEY[k].number}. {BY_KEY[k].title}",
-            placeholder="pre-populate memory...")
-        if scenario and st.button("Run scenario", width="stretch"):
-            moment = BY_KEY[scenario]
-            before = store.snapshot()
-            with st.spinner(f"running {moment.title}..."):
-                result = moment.run(get_store("acme"))
-            st.session_state.changes = diff_snapshots(before, store.snapshot())
-            st.session_state.last_path = result.path
-            st.rerun()
 
     st.divider()
     st.caption("One graph per workspace. No tenant column, no tenant filter — "

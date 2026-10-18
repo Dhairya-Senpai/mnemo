@@ -90,16 +90,16 @@ services:
     environment:
       FALKORDB_HOST: falkordb
       FALKORDB_PORT: "6379"
-    # The company world, the ten demo moments that give Acme its launch
+    # The company world, then the history that gives Acme its launch
     # conflict and blocked release, then the conversational workspace.
-    # None of these needs a model: the demo moments drive a scripted
-    # adapter, so seeding does not wait on the download.
+    # None of these needs a model -- all three write through MemoryStore
+    # directly -- so seeding does not wait on the model download.
     command:
       - /bin/sh
       - -c
       - |
         python scripts/seed.py
-        python scripts/run_demo.py --no-reset > /dev/null
+        python scripts/seed_history.py > /dev/null
         python scripts/seed_demo.py
     restart: "no"
 

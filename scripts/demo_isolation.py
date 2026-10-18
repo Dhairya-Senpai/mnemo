@@ -1,9 +1,9 @@
-"""Demo moment 6: the same question, two tenants, two correct answers.
+"""The same question, two tenants, two correct answers.
 
     python scripts/demo_isolation.py
 
 Run `python scripts/seed.py` first. This script WRITES to the acme graph
-(it applies the launch delay, as demo moments 1-5 would have), so reseed
+(it applies the launch delay, as scripts/seed_history.py would have), so reseed
 before recording.
 
 The point to make while this runs: there is no tenant column, no tenant
@@ -31,7 +31,7 @@ DELAY_TITLE = "Delay Spring Launch to May 15, 2027"
 
 
 def apply_launch_delay(store):
-    """Put acme into the state demo moments 1-5 leave behind.
+    """Put acme into the state scripts/seed_history.py leaves behind.
 
     Without this, the only decision on Spring Launch is its original ship
     date, and calling that a blocker would be nonsense. Idempotent: if the
@@ -102,7 +102,7 @@ def show(tenant):
 def main():
     print("Same question. Same code. Two graphs.")
 
-    # Put acme where the earlier demo moments would have left it.
+    # Put acme where seed_history.py would have left it.
     recorded = apply_launch_delay(MemoryStore("acme"))
     print(f"  setup: acme launch delay {'recorded' if recorded else 'already present'}")
 
