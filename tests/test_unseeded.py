@@ -445,6 +445,77 @@ def test_recall_recent_still_fills_its_limit():
     assert all("agent replies" not in e["summary"] for e in got), got
 
 
+# ------------------------------------------- deleting, as opposed to removing
+@test
+def test_deleting_a_conversation_takes_its_facts_with_it():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-destroy")
+    store.remember_fact(sid, "Planner", "Siddhi", "HAS_APPOINTMENT", "doctor",
+                        when="2026-10-20")
+    before = store.deletion_preview(sid)
+    assert before["facts"] >= 1 and before["events"] >= 1, before
+
+    store.delete_session(sid)
+    assert store.what_is_on("2026-10-20") == []
+    assert store._read("MATCH ()-[r:HAS_APPOINTMENT]->() RETURN count(r)")[0][0] == 0, \
+        "a delete should leave no edge behind, retired or otherwise"
+    assert store._read("MATCH (s:Session {id:$i}) RETURN count(s)",
+                       i=sid)[0][0] == 0
+
+
+@test
+def test_a_delete_leaves_nothing_dangling():
+    """The property that makes the order of operations matter.
+
+    Facts cite their originating event by id. Remove the events first and
+    every one of those ids points at nothing, which is exactly the failure
+    that made retiring the safer default in the first place.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-dangle")
+    store.remember_fact(sid, "Planner", "Siddhi", "LIKES", "coffee")
+    store.record_lookup(sid, "Planner", "recall_entity", "{}", keys=["Siddhi"])
+    store.delete_session(sid)
+
+    live = {r[0] for r in store._read("MATCH (e:Event) RETURN e.id")}
+    cited = {r[0] for r in store._read(
+        "MATCH ()-[r]->() WHERE r.source_event IS NOT NULL "
+        "RETURN r.source_event")}
+    cited |= {r[0] for r in store._read(
+        "MATCH (n) WHERE n.source_event IS NOT NULL RETURN n.source_event")}
+    assert cited <= live, f"these cite events that no longer exist: {cited - live}"
+    assert store._read("MATCH (l:Lookup) RETURN count(l)")[0][0] == 0, \
+        "the reasoning trace outlived the answers it belonged to"
+
+
+@test
+def test_a_delete_sweeps_entities_nothing_points_at():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-sweep")
+    store.remember_fact(sid, "Planner", "Siddhi", "HAS_APPOINTMENT", "doctor",
+                        when="2026-10-20")
+    store.delete_session(sid)
+    left = [r[0] for r in store._read(
+        "MATCH (n) WHERE NOT n:Agent RETURN coalesce(n.name, n.id)")]
+    assert left == [], f"orphaned entities were left behind: {left}"
+
+
+@test
+def test_a_delete_leaves_other_conversations_alone():
+    store = empty_store()
+    keep = store.start_session(user="Siddhi", session_id="s-keep2")
+    store.remember_fact(keep, "Planner", "Siddhi", "HAS_APPOINTMENT",
+                        "dentist", when="2026-10-21")
+    drop = store.start_session(user="Siddhi", session_id="s-drop2")
+    store.remember_fact(drop, "Planner", "Siddhi", "HAS_APPOINTMENT",
+                        "doctor", when="2026-10-20")
+
+    store.delete_session(drop)
+    assert store.what_is_on("2026-10-21"), "the other conversation's fact went too"
+    assert store.what_is_on("2026-10-20") == []
+    assert keep in [x["id"] for x in store.list_sessions()]
+
+
 # ------------------------------------------------------------------- report
 if __name__ == "__main__":
     try:

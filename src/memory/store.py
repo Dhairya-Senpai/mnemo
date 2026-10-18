@@ -369,6 +369,93 @@ class MemoryStore:
                  "preview": r[4], "title": r[5]}
                 for r in rows]
 
+    def deletion_preview(self, session_id):
+        """What a permanent delete of this conversation would destroy.
+
+        Shown before the fact because a delete here is not like deleting a
+        chat elsewhere: the conversation is the provenance for what it
+        taught, so the facts go with it.
+        """
+        ids = [r[0] for r in self._read(
+            "MATCH (:Session {id:$sid})-[:HAS_EVENT]->(e:Event) RETURN e.id",
+            sid=session_id)]
+        if not ids:
+            return {"events": 0, "messages": 0, "facts": 0, "nodes": 0,
+                    "lookups": 0, "orphaned_insights": 0}
+        count = lambda q: (self._read(q, ids=ids) or [[0]])[0][0]  # noqa: E731
+        return {
+            "events": len(ids),
+            "messages": len(self.session_transcript(session_id)),
+            "facts": count("MATCH ()-[r]->() WHERE r.source_event IN $ids "
+                           "RETURN count(r)"),
+            "nodes": count("MATCH (n) WHERE n.source_event IN $ids "
+                           "RETURN count(n)"),
+            "lookups": (self._read("MATCH (l:Lookup) WHERE l.session = $sid "
+                                   "RETURN count(l)", sid=session_id)
+                        or [[0]])[0][0],
+            # Insights built from these episodes keep existing but lose the
+            # sources that justified them, which is worth saying out loud.
+            "orphaned_insights": count(
+                "MATCH (i:Insight)-[:DERIVED_FROM]->(e:Event) "
+                "WHERE e.id IN $ids RETURN count(DISTINCT i)"),
+        }
+
+    def delete_session(self, session_id):
+        """Destroy a conversation and everything it created. No undo.
+
+        This is the one operation in the project that really deletes, and it
+        exists because retiring is not always what someone means. Retirement
+        keeps the row and closes its validity window, which is right for
+        memory that changed -- but anything still in the graph can still be
+        read, and three separate surfaces had to be shut one at a time before
+        a retired appointment stopped being mentioned (see docs/TESTING.md).
+        When the intent is "this should not exist", only removing it is
+        honest.
+
+        Order matters. Facts are removed before the events they cite, so no
+        edge is ever left with a `source_event` pointing at a deleted node;
+        the trace goes before the events it hangs off, for the same reason.
+        Orphaned entities are swept last: a node left with no relationships
+        at all -- the `doctor` nobody has an appointment with any more --
+        carries nothing, and leaving it would slowly fill the graph with
+        names that mean nothing.
+
+        What this cannot undo is a reference from somewhere else. An Insight
+        consolidated from these episodes keeps existing with fewer sources.
+        `deletion_preview` reports that before anything happens.
+        """
+        ids = [r[0] for r in self._read(
+            "MATCH (:Session {id:$sid})-[:HAS_EVENT]->(e:Event) RETURN e.id",
+            sid=session_id)]
+        gone = {"facts": 0, "nodes": 0, "lookups": 0, "events": 0,
+                "orphans": 0}
+
+        if ids:
+            res = self._write("MATCH ()-[r]->() WHERE r.source_event IN $ids "
+                              "DELETE r RETURN count(r)", ids=ids)
+            gone["facts"] = res.result_set[0][0] if res.result_set else 0
+            gone["nodes"] = self._write(
+                "MATCH (n) WHERE n.source_event IN $ids "
+                "DETACH DELETE n", ids=ids).nodes_deleted
+        # By session, not by READ edge. A turn that failed before answering
+        # leaves its lookups unlinked -- recorded, with nowhere to hang --
+        # and matching on the edge would walk straight past them.
+        gone["lookups"] = self._write(
+            "MATCH (l:Lookup) WHERE l.session = $sid "
+            "DETACH DELETE l", sid=session_id).nodes_deleted
+
+        gone["events"] = self._write(
+            "MATCH (s:Session {id:$sid}) "
+            "OPTIONAL MATCH (s)-[:HAS_EVENT]->(e:Event) "
+            "DETACH DELETE e, s", sid=session_id).nodes_deleted
+
+        # An Agent is kept even with nothing left to point at: it is an
+        # identity, not a fact, and record_event MERGEs it back anyway.
+        gone["orphans"] = self._write(
+            "MATCH (n) WHERE NOT (n)--() AND NOT n:Agent "
+            "DELETE n").nodes_deleted
+        return gone
+
     def rename_session(self, session_id, title):
         """Give a conversation a name instead of its opening line.
 

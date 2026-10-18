@@ -596,6 +596,34 @@ def window_remove_chat(session_id):
         st.rerun()
 
 
+@st.dialog("Delete permanently")
+def window_destroy_chat(session_id):
+    g = store.deletion_preview(session_id)
+    st.markdown("**Delete this conversation and everything it taught?**")
+    st.caption(
+        f"{g['messages']} message(s), {g['events']} event(s), "
+        f"{g['facts']} fact(s), {g['nodes']} recorded node(s) and "
+        f"{g['lookups']} reasoning trace(s) go from the graph, along with any "
+        f"entity left with nothing attached to it. This cannot be undone.")
+    if g["orphaned_insights"]:
+        st.warning(f"{g['orphaned_insights']} insight(s) were consolidated "
+                   f"from these episodes and will keep existing with fewer "
+                   f"sources.")
+    st.caption("**Remove** is the gentler option: it takes the conversation "
+               "out of the sidebar and retires what it taught, leaving the "
+               "history readable.")
+    cancel, go = st.columns(2)
+    if cancel.button("Cancel", width="stretch"):
+        st.rerun()
+    if go.button("Delete permanently", width="stretch", type="primary"):
+        store.delete_session(session_id)
+        if st.session_state.get("planner_session") == session_id:
+            st.session_state.planner_session = None
+        st.session_state.changes = None
+        st.session_state.planner_steps = None
+        st.rerun()
+
+
 @st.dialog("Tool calls on the last turn", width="large")
 def window_tools():
     for step in st.session_state.planner_steps or []:
@@ -708,10 +736,22 @@ with st.sidebar:
                         st.session_state.menu_seq = \
                             st.session_state.get("menu_seq", 0) + 1
                         st.rerun()
-                with st.container(key=f"cmdel{sid}"):
-                    if st.button(":material/delete: Remove", key=f"del{sid}",
-                                 type="tertiary", width="stretch"):
+                    if st.button(":material/visibility_off: Remove",
+                                 key=f"del{sid}", type="tertiary",
+                                 width="stretch",
+                                 help="Out of the sidebar; what it taught is "
+                                      "retired but stays readable"):
                         st.session_state.removing = sid
+                        st.session_state.menu_seq = \
+                            st.session_state.get("menu_seq", 0) + 1
+                        st.rerun()
+                with st.container(key=f"cmdel{sid}"):
+                    if st.button(":material/delete_forever: Delete",
+                                 key=f"des{sid}", type="tertiary",
+                                 width="stretch",
+                                 help="Destroy the conversation and the facts "
+                                      "it taught. No undo."):
+                        st.session_state.destroying = sid
                         st.session_state.menu_seq = \
                             st.session_state.get("menu_seq", 0) + 1
                         st.rerun()
@@ -751,6 +791,8 @@ if st.session_state.pop("open_delete", False):
     window_delete(tenant)
 if st.session_state.get("removing"):
     window_remove_chat(st.session_state.pop("removing"))
+if st.session_state.get("destroying"):
+    window_destroy_chat(st.session_state.pop("destroying"))
 
 # ---------------------------------------------------------------------- chat
 # The composer is read FIRST, even though Streamlit pins it to the foot of the
