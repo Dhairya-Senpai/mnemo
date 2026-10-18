@@ -1028,6 +1028,76 @@ selecting it brought it back — which is how `personal` kept reappearing
 after the database was wiped. It now lists what exists, falling back to a
 single default only on a completely empty instance.
 
+## 3n. "I don't have any record of your shoe collection"
+
+**Found by:** three chats in a row. The first two worked; the third did
+not, and the contrast is what makes it useful.
+
+```
+chat 1   "i like nike shoes"              -> you LIKES Nike shoes
+         "i have 2 pairs of nike shoes"   -> you HAS 2 pairs of Nike shoes
+chat 2   "I bought another nike shoes"    -> 2 pairs RETIRED, 3 pairs written
+chat 3   "how many shoes do i own?"       -> "I don't have that information"
+```
+
+**The memory was perfect.** The graph held `you LIKES Nike shoes` and
+`you HAS 3 pairs of Nike shoes`, with the 2-pairs fact retired at the
+right moment. The curator had done every part of its job across two
+conversations.
+
+**Chat 3 called no tools at all.** Not a failed read -- zero `Lookup`
+nodes for that session, while `recall_entity('you')` would have returned
+the answer outright.
+
+### And the cause was a previous fix of mine
+
+To stop the agent volunteering unrelated conversations (3e), the injected
+topic index had been reworded to:
+
+> Do not read or mention any of these unless the person asks to return to
+> one.
+
+"How many shoes do I own?" is not asking to *return to a subject*, so it
+obeyed and read nothing. Over-volunteering had been traded for
+under-looking, and the test suite could not see either because both are
+about what a model chooses to do.
+
+**Changed, in two places.**
+
+The index now distinguishes the thing that actually matters -- not whether
+they asked to resume, but whether the question is *about* one of the
+listed subjects:
+
+> If what they just said is about one of these, read it with read_topic.
+> If it is not, leave them alone.
+
+And, structurally: **what is currently true about the person is carried in
+every prompt**, read from the graph, exactly as standing rules are. Facts
+about whoever is talking are few, always relevant and cheap, so they stop
+depending on the model electing to search -- which is the tactic that
+failed three times in 3b and once more here.
+
+It reads current facts only, so retiring one removes it from the next
+turn. That is still graph memory: the prompt is rebuilt by a Cypher query
+every turn.
+
+**Verified, `ornith:9b`:**
+
+```
+"how many shoes do i own?"
+  tools: []
+  -> "You have 3 pairs of Nike shoes - so 6 individual shoes."
+
+"write a python function that reverses a string"
+  tools: []
+  -> the function, and no mention of shoes
+```
+
+The second is the control. Carrying facts in context is one step from the
+over-sharing in section 5 -- a model that was told the passport expiry
+date once volunteered it while booking a cinema ticket -- so the block
+says plainly not to recite them unasked, and is capped at twelve.
+
 ## 4. Still open
 
 - **A person's own words are still recalled after the fact is retired.**

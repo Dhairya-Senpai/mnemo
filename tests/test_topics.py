@@ -1043,6 +1043,62 @@ def test_the_index_does_not_invite_the_model_to_open_a_subject():
 
 
 @test
+def test_what_is_known_about_the_person_is_carried_in_context():
+    """Found by use, and the third fix of this shape.
+
+    Asked "how many shoes do i own?" in a new chat, a live agent called
+    **no tools at all** and answered "I don't have any record of your shoe
+    collection" -- while `you HAS 3 pairs of Nike shoes` sat in the graph,
+    written correctly by the curator two conversations earlier. It did not
+    look, and prompting it to look is what failed three times with
+    standing rules (TESTING.md 3b).
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.remember_fact(sid, "Planner", "Siddhi", "HAS",
+                        "3 pairs of Nike shoes", object_type="Thing")
+    prompt = build_planner(store, sid,
+                           FakeAdapter([says("hi")])).system_prompt()
+    assert "3 pairs of Nike shoes" in prompt, prompt[-500:]
+    assert "rather than saying you have no record" in prompt
+
+
+@test
+def test_a_retired_fact_is_not_carried_in_context():
+    """Injection reads current facts only, or retiring something would
+    stop working -- the bug that took three attempts in TESTING.md 3."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.remember_fact(sid, "Planner", "Siddhi", "HAS", "2 pairs",
+                        object_type="Thing")
+    store.retire_open_fact(sid, "Planner", "Siddhi", "HAS", "2 pairs",
+                           "bought another")
+    store.remember_fact(sid, "Planner", "Siddhi", "HAS", "3 pairs",
+                        object_type="Thing")
+    prompt = build_planner(store, sid,
+                           FakeAdapter([says("hi")])).system_prompt()
+    assert "3 pairs" in prompt
+    assert "2 pairs" not in prompt, "a retired fact must not be carried"
+
+
+@test
+def test_the_index_tells_the_model_when_to_read_a_subject():
+    """This wording has been wrong in both directions: first an invitation
+    that made it open unrelated conversations, then a prohibition that
+    stopped it reading one the question was plainly about."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.link_event_topics(
+        store.record_event(sid, "Planner", "message", "x", speaker="user"),
+        ["lift control logic"])
+    prompt = build_planner(store, sid,
+                           FakeAdapter([says("hi")])).system_prompt()
+    assert "If what they just said is about one of these" in prompt
+    assert "do not mention where you left off" in prompt
+    assert "To continue one" not in prompt
+
+
+@test
 def test_the_topic_index_is_injected_into_the_planners_prompt():
     """A model cannot ask for a conversation whose existence nothing has
     told it about. recent_conversations lists sessions by their *opening

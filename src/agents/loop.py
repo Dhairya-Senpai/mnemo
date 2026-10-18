@@ -129,9 +129,54 @@ class Agent:
             f"{about_user}"
             f"Today's date is {store.now()[:10]}.\n"
             f"{self._standing_rules()}"
+            f"{self._known_facts()}"
             f"{self._roster()}"
             f"{self._topic_index()}"
         )
+
+    # How many facts about the person to carry. Small on purpose: this is
+    # "what you already know about them", not their file.
+    MAX_KNOWN_FACTS = 12
+
+    def _known_facts(self) -> str:
+        """What is currently true about the person, read from the graph.
+
+        The third fix of this shape, and the reason is the same each time.
+        Asked "how many shoes do i own?" in a new chat, a live agent called
+        **no tools at all** and answered "I don't have any record of your
+        shoe collection" -- while `you HAS 3 pairs of Nike shoes` sat in
+        the graph, written correctly by the curator two chats earlier.
+
+        It did not look. Prompting it to look is what failed three times
+        with standing rules (docs/TESTING.md 3b), and the fix that held
+        there was to stop depending on the model electing to search. Facts
+        about the person are few, always relevant, and cheap to carry, so
+        they are carried.
+
+        This does not replace the recall tools. Anything about a project, a
+        date or another person still has to be looked up; this is only the
+        handful of things true of whoever is talking.
+        """
+        if not self.standing_rules:
+            return ""
+        store = self.toolbox.store
+        try:
+            user = store.session_user(self.toolbox.session_id)
+            known = store.recall_entity(user) if user else None
+        except Exception:
+            return ""                      # never break a turn over this
+        if not known:
+            return ""
+        lines = [f"- {user} {f['predicate'].lower().replace('_', ' ')} "
+                 f"{f['name']}" + (f" (on {f['when']})" if f.get("when") else "")
+                 for f in known.get("facts_out", [])][:self.MAX_KNOWN_FACTS]
+        if not lines:
+            return ""
+        return (
+            f"\nWhat you already know about {user!r}, from the graph. These "
+            f"are current;\nanswer from them rather than saying you have no "
+            f"record. Do not recite them\nunasked -- raise one only when it "
+            f"bears on what was said:\n" + "\n".join(lines) + "\n")
 
     def _roster(self) -> str:
         """Who else can be handed work, read from the graph.
@@ -188,12 +233,23 @@ class Agent:
         # here", and a model asked for Java Fibonacci read the unrelated lift
         # conversation and appended where it had left off on it. The index
         # has to say the subjects exist without suggesting they be opened.
+        # The wording matters and has been wrong in both directions. It
+        # first read "To continue one, call read_topic", and a model asked
+        # for Java Fibonacci opened an unrelated lift conversation and
+        # reported where it had left off. Corrected to "do not read any of
+        # these unless the person asks to return to one", which produced
+        # the opposite failure: asked "how many shoes do i own?" with a
+        # `nike shoes` subject sitting in this list, it read nothing and
+        # said it had no record.
+        #
+        # The distinction is not whether they asked to *resume*, it is
+        # whether the question is *about* one of these.
         return (
-            "\nSubjects this person has worked on before, for reference "
-            "only:\n" + lines +
-            "\nDo not read or mention any of these unless the person asks to "
-            "return to one.\nIf they do, read_topic takes the name exactly "
-            "as written above.\n")
+            "\nSubjects this person has worked on before:\n" + lines +
+            "\nIf what they just said is about one of these, read it with "
+            "read_topic, using\nthe name exactly as written. If it is not, "
+            "leave them alone -- do not open one\nand do not mention where "
+            "you left off on something they did not ask about.\n")
 
     # A rule the person taught once has to apply every time, including on the
     # turns where the model sees no reason to consult its memory. Leaving that
