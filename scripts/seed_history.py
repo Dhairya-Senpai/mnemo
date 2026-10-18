@@ -92,20 +92,35 @@ def day_one_delay(store):
     store.record_event(
         s, "Planner", "message",
         "I've recorded the delay with its reason, retired the April date it "
-        "replaces, and left the Reviewer a task to work out the fallout.")
+        "replaces, and left the Reviewer a task to work out the fallout.",
+        speaker="Planner")
     return delay_id
 
 
 def reviewer_claims(store):
-    """The Reviewer picks the task up. Claim, then close it with its finding."""
+    """The Reviewer picks the task up. Claim, then close it with its finding.
+
+    The only conversation here with no human in it. The trigger is spoken by
+    `system` and the finding by the Reviewer, which is how `app.py` records
+    a handoff -- both render as agent turns, because both are.
+    """
     s = store.start_session(user=USER, session_id="sess-day1-reviewer")
     task_id = store.claim_task("Reviewer")
     if task_id is None:
         return None
+    store.record_event(
+        s, "Reviewer", "message",
+        "Check whether anything is assigned to you.", speaker="system")
     store.complete_task(
         s, "Reviewer", task_id,
         "Billing v2 and Mobile App both sit behind Spring Launch; Billing v2 "
         "is the one with a release this sprint.")
+    store.record_event(
+        s, "Reviewer", "message",
+        "Picked up the launch-delay task. Billing v2 and Mobile App both sit "
+        "behind Spring Launch; Billing v2 is the one with a release this "
+        "sprint, so that is the one that breaks.",
+        speaker="Reviewer")
     return task_id
 
 
@@ -118,7 +133,8 @@ def day_two_block_the_release(store, clock, decision_id):
     """
     clock.jump(days=1)
     s = store.start_session(user=USER, session_id="sess-day2")
-    store.record_event(s, "Reviewer", "message", "Can we ship Billing v2 this sprint?",
+    store.record_event(s, "Reviewer", "message",
+                       "Can we ship Billing v2 this sprint?",
                        about=[("Project", "Billing v2")], speaker="user")
     store.create_ticket(
         s, "Reviewer",
@@ -129,7 +145,8 @@ def day_two_block_the_release(store, clock, decision_id):
         s, "Reviewer", "message",
         "No. Billing v2 sits behind Spring Launch, which is delayed to May 15, "
         "2027 because Ledger Migration is blocked. I've filed a ticket citing "
-        "that decision.")
+        "that decision.",
+        speaker="Reviewer")
 
 
 def teach_a_rule(store):
@@ -148,7 +165,7 @@ def teach_a_rule(store):
     reply = store.record_event(
         s, "Planner", "message",
         "Noted. I'll apply that whenever a finance system is involved.",
-        about=[("System", "Ledger Service")])
+        about=[("System", "Ledger Service")], speaker="Planner")
     store.link_event_topics(reply, ["finance notifications"])
     store.learn_procedure(
         s, "Planner",
@@ -171,7 +188,7 @@ def teach_a_rule(store):
         f"Before I touch Billing v2: a standing rule applies - "
         f"{applicable[0]['action']} ({applicable[0]['matched']})."
         if applicable else "No standing rules apply here.",
-        about=[("Project", "Billing v2")])
+        about=[("Project", "Billing v2")], speaker="Reviewer")
 
 
 def supersede_again(store):
@@ -191,7 +208,8 @@ def supersede_again(store):
     store.record_event(
         s, "Planner", "message",
         "June 1, 2027 is now the current date. The May 15, 2027 decision is "
-        "retired but still readable, and the chain back through it is intact.")
+        "retired but still readable, and the chain back through it is intact.",
+        speaker="Planner")
 
 
 def transfer_ownership(store):
@@ -212,7 +230,8 @@ def transfer_ownership(store):
     store.record_event(
         s, "Reviewer", "message",
         "Ownership of Ledger Migration has moved from Lee Park to Dana Ruiz. "
-        "Dana had been the one working on it all along.")
+        "Dana had been the one working on it all along.",
+        speaker="Reviewer")
 
 
 def consolidate_ledger(store):
@@ -243,6 +262,19 @@ def consolidate_ledger(store):
              "changed owner over the same period; sits upstream of the Spring "
              "Launch train. It is the recurring cause of Spring Launch delays.",
         source_event_ids=[e["id"] for e in episodes])
+
+    # Deliberately no `about=`: an utterance carrying an ABOUT edge to Ledger
+    # Migration would immediately become a fresh un-consolidated episode and
+    # the entity would show up as a candidate again, one turn after being
+    # consolidated. The standup notes above keep their ABOUT edges because
+    # being consolidated is exactly their job.
+    store.record_event(
+        s, "Archivist", "message",
+        f"Folded {len(episodes)} separate episodes about Ledger Migration "
+        f"into one standing fact, with a DERIVED_FROM edge back to each. "
+        f"Nothing was lost: the episodes are still there, now marked as "
+        f"absorbed so they are not counted twice.",
+        speaker="Archivist")
     return len(episodes)
 
 
