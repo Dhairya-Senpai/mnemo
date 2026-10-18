@@ -873,8 +873,13 @@ def test_the_newest_settlement_is_the_one_that_holds():
     # Flagged as well as ordered. Asked what was decided, a model read a
     # correctly newest-first list and narrated it oldest-first; it reached
     # the right conclusion that time, which is not the same as reliable.
-    assert settled[0]["status"] == "current", settled
-    assert settled[1]["status"] == "superseded", settled
+    #
+    # `latest`/`earlier`, not `current`/`superseded`: several independent
+    # things get settled about one subject, and the graph does not know
+    # which of them replaced another. Claiming supersession was the tool
+    # asserting more than it had been told.
+    assert settled[0]["status"] == "latest", settled
+    assert settled[1]["status"] == "earlier", settled
 
 
 @test
@@ -1128,7 +1133,7 @@ def test_a_task_can_concern_a_subject_not_just_a_project():
     # The context carries what is already settled, so the Reviewer's first
     # read already contains the thing it was asked to check against.
     assert ctx["settled_so_far"][0]["settled"].endswith("ArrayDeque"), ctx
-    assert ctx["settled_so_far"][0]["status"] == "current", ctx
+    assert ctx["settled_so_far"][0]["status"] == "latest", ctx
 
 
 @test

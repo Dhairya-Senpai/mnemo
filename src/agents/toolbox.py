@@ -305,9 +305,11 @@ def _build_catalogue() -> dict[str, Tool]:
         lambda s, a, sid, topic, limit=60: s.read_topic(topic, limit=limit))
 
     add("what_was_decided",
-        "What has been settled, newest first, so the first result is what "
-        "holds now. Pass a subject to narrow it, or omit it for everything "
-        "recently decided. Use this for \"what did we decide about X\", "
+        "What has been settled, newest first. Each is marked `latest` or "
+        "`earlier` for its subject; earlier does not mean wrong, because "
+        "several independent things get settled about one subject. Where "
+        "two contradict, the newer one holds. Use this for "
+        "\"what did we decide about X\", "
         "\"what did we go with\", \"what was the final approach\" -- it is "
         "the decisions themselves, not the conversation around them.",
         {"topic": _STR, "limit": _INT}, [],

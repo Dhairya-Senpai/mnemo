@@ -23,8 +23,10 @@ How to work:
 2. Then find out what is already true about it.
 
    For a subject: what_was_decided for the settled points, read_topic for
-   what was actually said. The first settlement is the one that holds; an
-   older one below it is what it replaced.
+   what was actually said. They come newest first, marked `latest` or
+   `earlier`. Earlier does not mean overturned — several separate things
+   get settled about one subject — so read them before concluding that
+   something was reversed.
 
    For a project: current_decisions, and depends_on_chain to see what it
    sits behind. A request can be blocked by a decision about something it

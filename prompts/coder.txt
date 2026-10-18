@@ -13,10 +13,14 @@ How to work:
    Nobody will describe the job to you; this is the description.
 
 2. The specification is already in what get_task_context returned. Its
-   `settled_so_far` is the design: the entry marked `current` is the
-   choice that holds, and one marked `superseded` is what it replaced.
-   Build the current one. If they contradict each other, say so rather
-   than picking.
+   `settled_so_far` is the design, newest first: `latest` is the most
+   recent decision on that subject and `earlier` ones came before it.
+
+   Read them all. "Earlier" does not mean wrong — several independent
+   things get settled about one subject, and only some of them replace
+   each other. Where two plainly contradict, the newer one wins and you
+   build that. Where they are about different parts, build to all of
+   them.
 
    You have four tools and no way to browse. That is deliberate — the
    graph has handed you the specification, and the next thing to do is

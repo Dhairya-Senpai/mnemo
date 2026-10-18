@@ -672,19 +672,27 @@ class MemoryStore:
               "ORDER BY e.ts DESC, e.id DESC LIMIT $limit",
             **params,
         )
-        # Flagged, not merely ordered. Asked what was decided, the model
-        # read a correctly newest-first list and narrated it oldest-first;
-        # it reached the right conclusion that time, which is not the same
-        # as being reliable. Order is a convention a reader can miss, and
-        # docs/TESTING.md is a list of occasions where the fix that held
-        # was the one that changed what the tool returns.
+        # Flagged, not merely ordered. Asked what was decided, a model read
+        # a correctly newest-first list and narrated it oldest-first; it
+        # reached the right conclusion that time, which is not the same as
+        # being reliable. Order is a convention a reader can miss.
+        #
+        # `latest` and `earlier`, not `current` and `superseded`. The first
+        # version said superseded, and that was a claim the graph cannot
+        # support: several independent things get settled on one subject --
+        # the queue type, the door timing, the emergency stop are three
+        # decisions about one lift, and none replaces another. Only a
+        # settlement that contradicts an earlier one supersedes it, and
+        # nothing here knows which did. Saying "earlier" is true; saying
+        # "superseded" was the tool asserting something it had not been
+        # told, which is the failure this project keeps finding in models.
         out, seen = [], set()
         for r in rows:
             topic_name = r[2]
             out.append({"event": r[0], "ts": r[1], "topic": topic_name,
                         "settled": r[3], "said_by": r[4], "session": r[5],
-                        "status": ("current" if topic_name not in seen
-                                   else "superseded")})
+                        "status": ("latest" if topic_name not in seen
+                                   else "earlier")})
             seen.add(topic_name)
         return out
 
@@ -1904,20 +1912,13 @@ class MemoryStore:
                 "RETURN c.name", name=assigned_to)
             if len(handled) == 1:
                 needs = handled[0][0]
-        # Likewise the subject: a task about nothing cannot be read by the
-        # agent that claims it, and the conversation already knows what it
-        # is about. Same carry-forward the curator uses.
-        if not (concerns_topic or concerns_project or concerns_decision):
-            carried = self.session_topics(session_id, limit=1)
-            if carried:
-                concerns_topic = carried[0]
-            else:
-                # A handoff made in a fresh chat has no session topic to
-                # carry, but the title almost always names the subject --
-                # "write the pending floor request queue". resolve_topic
-                # already forgives loose wording, so match against what the
-                # workspace actually holds rather than coining a new one.
-                concerns_topic = self.resolve_topic(title)
+        # Likewise the subject. Note this is decided on *outcome*, further
+        # down, not on whether an argument was passed: a live model handed
+        # `concerns_project="lift controller"` in a workspace that has no
+        # Project nodes at all, the MATCH found nothing, and the task was
+        # left about nothing while looking correctly filled in. Checking
+        # the argument would have accepted that; checking whether an edge
+        # was actually created does not.
         if needs:
             # What the work requires, rather than only who should do it.
             # An agent then claims what it can do -- see claim_task.
@@ -1938,6 +1939,26 @@ class MemoryStore:
                 tid=tid, topic=self._clean_topic(concerns_topic),
                 now=self.now(),
             )
+
+        # Did anything actually attach? The three clauses above all match on
+        # something that may not exist, and a task about nothing cannot be
+        # read by the agent that claims it. Fall back to what the
+        # conversation is about, then to the subject named in the title --
+        # resolve_topic already forgives loose wording, so this matches what
+        # the workspace holds rather than coining a new subject.
+        attached = self._read(
+            "MATCH (:Task {id:$tid})-[:CONCERNS]->() RETURN count(*)",
+            tid=tid)
+        if not (attached and attached[0][0]):
+            fallback = (self.session_topics(session_id, limit=1) or [None])[0]
+            fallback = fallback or self.resolve_topic(title)
+            if fallback:
+                self._write(
+                    "MATCH (t:Task {id:$tid}) MERGE (tp:Topic {name:$topic}) "
+                    "ON CREATE SET tp.first_seen = $now "
+                    "MERGE (t)-[:CONCERNS]->(tp)",
+                    tid=tid, topic=self._clean_topic(fallback),
+                    now=self.now())
         return tid
 
     def claim_task(self, agent):
