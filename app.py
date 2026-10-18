@@ -735,8 +735,7 @@ with st.sidebar:
     # the menu sitting on top of it -- covering the dialog's own Cancel.
     # Changing the key remounts the subtree, which closes the popover.
     kebab_box = kebab.container(key=f"wskebab{st.session_state.get('menu_seq', 0)}")
-    with kebab_box.popover(":material/more_vert:",
-                           help=f"Manage {workspace_label(tenant)}"):
+    with kebab_box.popover(":material/more_vert:"):
         # Three rows and nothing else. Anything needing a field or a
         # confirmation opens its own dialog instead, which is also the only
         # place a Cancel can sensibly live.
@@ -805,9 +804,11 @@ with st.sidebar:
         row, menu = st.columns([5, 1], vertical_alignment="center")
         shown = title if len(title) <= 28 else title[:27] + "…"
         with row.container(key=f"crow{sid}"):
+            # No tooltip. The row already shows the title, and a hover card
+            # reading "10 messages · 2026-10-17T09:00:45Z" over a list you
+            # are scanning is noise, not information.
             if st.button(shown, key=f"go{sid}", width="stretch",
-                         type="primary" if active else "tertiary",
-                         help=f"{sess['turns']} messages · {sess['started_at']}"):
+                         type="primary" if active else "tertiary"):
                 if not active:
                     st.session_state.planner_session = sid
                     st.session_state.changes = None
@@ -815,7 +816,9 @@ with st.sidebar:
                     st.rerun()
 
         with menu.container(key=f"cmenu{sid}{st.session_state.get('menu_seq', 0)}"):
-            with st.popover(":material/more_horiz:", help="Manage"):
+            # Vertical dots, matching the workspace kebab above, and no
+            # tooltip: a three-dot menu does not need to be labelled.
+            with st.popover(":material/more_vert:"):
                 with st.container(key=f"cmitems{sid}"):
                     if st.button(":material/edit: Rename", key=f"ren{sid}",
                                  type="tertiary", width="stretch"):
