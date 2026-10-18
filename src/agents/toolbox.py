@@ -289,6 +289,15 @@ def _build_catalogue() -> dict[str, Tool]:
             {"who": m["speaker"], "said": m["text"][:1200]}
             for m in s.session_transcript(session_id, limit=limit)])
 
+    add("read_topic",
+        "Everything said about one subject, both sides, oldest first, across "
+        "every conversation it came up in. The subjects available are listed "
+        "in your instructions. Prefer this over read_conversation when "
+        "resuming a piece of work rather than a particular chat: a subject "
+        "that ran across three sessions comes back whole.",
+        {"topic": _STR, "limit": _INT}, ["topic"],
+        lambda s, a, sid, topic, limit=60: s.read_topic(topic, limit=limit))
+
     add("explain_answer",
         "Why an agent answered as it did earlier. Returns the reads behind a "
         "past answer, in order, and which nodes each one returned. Pass "
@@ -303,12 +312,23 @@ def _build_catalogue() -> dict[str, Tool]:
 
 CATALOGUE = _build_catalogue()
 
+# The Planner converses and reads. It no longer writes plain facts or rules:
+# those are the curator's, which is the whole point of splitting the two
+# jobs. One model trying to be a good conversational partner *and* a reliable
+# scribe loses the second job whenever the first is interesting, and
+# docs/TESTING.md section 5 is the list of ways that showed up.
+#
+# `retire_fact` deliberately stays. Retirement is triggered by a person
+# correcting something mid-conversation ("actually that moved to the 22nd"),
+# where the Planner has the context and the curator -- which runs afterwards
+# -- would be too late. It also keeps the ordering that bug 2.2 required:
+# the Planner retires during the turn, the curator asserts after it.
 PLANNER_TOOLS = (
     "recall_recent", "recall_entity", "recall_related", "what_is_on",
     "current_decisions", "decision_history", "explain_path", "insight_sources",
-    "remember_fact", "record_decision", "create_task", "learn_procedure",
+    "record_decision", "create_task",
     "retire_fact", "explain_answer", "recent_conversations",
-    "read_conversation",
+    "read_conversation", "read_topic",
 )
 
 REVIEWER_TOOLS = (
@@ -318,6 +338,7 @@ REVIEWER_TOOLS = (
     "current_facts", "get_applicable_procedures", "remember_fact",
     "retire_fact", "assert_fact", "create_ticket", "complete_task",
     "explain_answer", "recent_conversations", "read_conversation",
+    "read_topic",
 )
 
 

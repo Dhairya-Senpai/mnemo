@@ -229,18 +229,32 @@ def test_appointment_then_flight_across_two_sessions():
     store = empty_store()
 
     s1 = store.start_session(user="Siddhi", session_id="s-day1")
+    # Two scripted calls: the Planner's reply, then the curation of that
+    # turn. The Planner has no fact-writing tool any more -- extraction is
+    # the curator's job, so that the model answering the person is not also
+    # the model deciding what to write down.
     llm1 = FakeAdapter([
-        calls("remember_fact", {"subject": "Siddhi", "predicate": "HAS_APPOINTMENT",
-                                "object": "doctor", "when": "2026-10-20"}),
         says("Noted - doctor on the 20th."),
+        says(json.dumps({
+            "topics": ["doctor appointment"],
+            "entities": [],
+            "facts": [{"subject": "Siddhi", "predicate": "HAS_APPOINTMENT",
+                       "object": "doctor", "subject_type": "Person",
+                       "object_type": "Thing", "when": "2026-10-20"}],
+            "rules": [],
+        })),
     ])
-    build_planner(store, s1, llm1).run("I have a doctor appointment on the 20th.")
+    first = build_planner(store, s1, llm1).run(
+        "I have a doctor appointment on the 20th.")
+    assert first.curation.facts == ["Siddhi HAS_APPOINTMENT doctor"], \
+        first.curation
 
     # A different session. Nothing is carried over but the graph.
     s2 = store.start_session(user="Siddhi", session_id="s-day2")
     llm2 = FakeAdapter([
         calls("what_is_on", {"date": "2026-10-20"}),
         says("You already have a doctor appointment that day."),
+        says('{"topics":[],"entities":[],"facts":[],"rules":[]}'),
     ])
     turn = build_planner(store, s2, llm2).run("Can I fly on the 20th?")
 

@@ -1,0 +1,578 @@
+"""Conversation connected to the graph: topics, mentions, and the curator.
+
+    python tests/test_topics.py           # needs FalkorDB on localhost:6379
+
+Why this suite exists. Every message either side of a conversation was
+already stored in full -- `Event.summary` holds the verbatim text, which is
+how the UI rebuilds a transcript from FalkorDB rather than from browser
+state. What was missing is that none of it was *connected*. Measured on the
+three workspaces in real use, **47 of 47 utterances had no outgoing edge**:
+every word stored, and not one message reachable from anything it was about.
+
+The cause was a single omitted argument. `record_event` accepts `about`,
+which wires an episode to the entities it touched, and the agent loop never
+passed one. A fact written by `remember_fact` got its ABOUT edges; the
+message that taught it got none.
+
+So two things are tested here:
+
+* **The connection itself** -- topics, mentions, and the queries that make a
+  past conversation findable by subject rather than by its opening line.
+* **The curator** -- the second pass that writes them. The Planner converses
+  and reads; the curator writes facts, rules and topics. One writer, one
+  schema, and no dedup race.
+
+The curator's write path is tested with plain dicts and no adapter at all,
+which is how every other memory behaviour in this project is tested. Where a
+model is involved it is scripted, so this proves the mechanism and says
+nothing about whether a real model extracts well.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from agents import build_planner  # noqa: E402
+from agents.curate import apply_curation, build_prompt, known_context  # noqa: E402
+from agents.toolbox import PLANNER_TOOLS  # noqa: E402
+from llm.fake import FakeAdapter, calls, says  # noqa: E402
+from memory import MemoryStore  # noqa: E402
+
+from falkordb import FalkorDB  # noqa: E402
+
+TENANT = "topics"
+PASSED, FAILED = [], []
+
+
+def test(fn):
+    name = fn.__name__.replace("test_", "").replace("_", " ")
+    try:
+        fn()
+    except AssertionError as e:
+        FAILED.append((name, str(e) or "assertion failed"))
+        print(f"[FAIL] {name}\n       {e}")
+    except Exception as e:
+        FAILED.append((name, f"{type(e).__name__}: {e}"))
+        print(f"[ERROR] {name}\n       {type(e).__name__}: {e}")
+    else:
+        PASSED.append(name)
+        print(f"[PASS] {name}")
+    return fn
+
+
+def empty_store():
+    try:
+        FalkorDB(host="localhost", port=6379).select_graph(
+            f"tenant_{TENANT}").delete()
+    except Exception:
+        pass
+    return MemoryStore(TENANT)
+
+
+def curation(topics=(), entities=(), facts=(), rules=()):
+    """A curator result as JSON text, for scripting a fake adapter."""
+    return says(json.dumps({
+        "topics": list(topics), "entities": list(entities),
+        "facts": list(facts), "rules": list(rules),
+    }))
+
+
+print("using tenant_topics\n")
+
+
+# ------------------------------------------------- indexes on every workspace
+@test
+def test_a_conversation_workspace_gets_indexes_too():
+    """Indexes used to be created only by the seeder.
+
+    So the two demo graphs had all of them and every workspace made by
+    talking had none -- the graphs actually in use were the unindexed ones.
+    Same shape as the fixture blind spot in docs/TESTING.md section 1.
+    """
+    store = empty_store()
+    assert store._read("CALL db.indexes() YIELD label RETURN label") == [], \
+        "fixture should start with no graph at all"
+    store.start_session(user="Siddhi", session_id="s-idx")
+    labels = {r[0] for r in
+              store._read("CALL db.indexes() YIELD label RETURN label")}
+    assert "Topic" in labels, f"Topic.name must be indexed: {labels}"
+    assert "Event" in labels and "Person" in labels, labels
+
+
+@test
+def test_indexing_twice_is_not_an_error():
+    """FalkorDB has no CREATE INDEX IF NOT EXISTS -- verified, it is a parse
+    error. A repeat raises "already indexed" and must be swallowed."""
+    store = empty_store()
+    store.start_session(user="Siddhi", session_id="s-a")
+    second = MemoryStore(TENANT)          # fresh instance, same graph
+    second.start_session(user="Siddhi", session_id="s-b")   # must not raise
+
+
+@test
+def test_reads_still_work_before_the_graph_exists():
+    """ensure_indexes must not run in __init__.
+
+    CREATE INDEX is a write, and a write brings the Redis key into being.
+    Indexing at construction would mean a new workspace was never again read
+    before it existed, quietly retiring the empty-key path that
+    test_unseeded.py guards.
+    """
+    store = empty_store()
+    assert store.list_sessions() == []
+    assert store.topic_index() == []
+    assert store.read_topic("anything")["turns"] == []
+
+
+# ------------------------------------------------------------------- topics
+@test
+def test_a_turn_is_no_longer_an_island():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.remember_fact(sid, "Planner", "Siddhi", "PREFERS", "Java",
+                        object_type="Language")
+    eid = store.record_event(sid, "Planner", "message",
+                             "how do i design lift control logic",
+                             speaker="user")
+    before = store._read(
+        "MATCH (e:Event {id:$e})-[:ABOUT|ON_TOPIC]->() RETURN count(*)",
+        e=eid)[0][0]
+    assert before == 0, "a bare message starts unconnected"
+
+    store.link_event_topics(eid, ["lift control logic"])
+    store.link_event_entities(eid, ["Java"])
+    after = store._read(
+        "MATCH (e:Event {id:$e})-[:ABOUT|ON_TOPIC]->() RETURN count(*)",
+        e=eid)[0][0]
+    assert after == 2, f"expected a topic and a mention, got {after}"
+
+
+@test
+def test_case_and_spacing_do_not_fragment_a_topic():
+    """The cheap half of the problem docs/TESTING.md section 5 describes."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    e1 = store.record_event(sid, "Planner", "message", "a", speaker="user")
+    e2 = store.record_event(sid, "Planner", "message", "b", speaker="user")
+    store.link_event_topics(e1, ["Lift Control Logic"])
+    store.link_event_topics(e2, ["  lift   control logic  "])
+    assert store._read("MATCH (t:Topic) RETURN count(t)")[0][0] == 1, \
+        "the same subject must land on one node"
+
+
+@test
+def test_mentions_only_link_to_things_that_already_exist():
+    """Mentions connect a turn to what is known; facts create what is new.
+
+    Without the split every noun a model emitted would mint a node and the
+    graph would fill with scenery.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.remember_fact(sid, "Planner", "Siddhi", "PREFERS", "Java",
+                        object_type="Language")
+    eid = store.record_event(sid, "Planner", "message", "java and tuesday",
+                             speaker="user")
+    linked = store.link_event_entities(eid, ["Java", "Tuesday"])
+    assert linked == ["Java"], f"only existing entities link: {linked}"
+    assert store._read("MATCH (n {name:'Tuesday'}) RETURN count(n)")[0][0] == 0
+
+
+@test
+def test_a_standing_rule_is_not_offered_as_an_entity():
+    """A Procedure's `name` is an internal handle, not a thing anyone
+    mentions. It leaked into the curator's known-entity list until
+    NON_ENTITY_LABELS covered it."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.learn_procedure(sid, "Planner", "comment every line",
+                          "writing code", "comment each line")
+    assert "comment every line" not in known_context(store)
+
+
+@test
+def test_adding_a_topic_to_a_missing_event_is_loud():
+    """Bug 2.1's lesson: a MATCH that finds nothing makes the rest of a
+    query a silent no-op, and a method that returns anyway is how a caller
+    ends up with provenance pointing at nothing."""
+    store = empty_store()
+    store.start_session(user="Siddhi", session_id="s1")
+    try:
+        store.link_event_topics("evt-does-not-exist", ["x"])
+    except LookupError:
+        return
+    raise AssertionError("expected LookupError for an unknown event")
+
+
+# -------------------------------------------------------- finding it again
+@test
+def test_the_index_counts_turns_and_orders_by_recency():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    for text in ("one", "two", "three"):
+        store.link_event_topics(
+            store.record_event(sid, "Planner", "message", text,
+                               speaker="user"),
+            ["lift control logic"])
+    store.link_event_topics(
+        store.record_event(sid, "Planner", "message", "later",
+                           speaker="user"),
+        ["rate limiter design"])
+
+    index = store.topic_index()
+    assert [t["topic"] for t in index][0] == "rate limiter design", index
+    lift = [t for t in index if t["topic"] == "lift control logic"][0]
+    assert lift["turns"] == 3, lift
+
+
+@test
+def test_the_index_ignores_the_agents_own_working_record():
+    """Only utterances are turns of conversation."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    said = store.record_event(sid, "Planner", "message", "hi", speaker="user")
+    internal = store.record_event(sid, "Planner", "action", "did a thing")
+    store.link_event_topics(said, ["lift control logic"])
+    store.link_event_topics(internal, ["lift control logic"])
+    assert store.topic_index()[0]["turns"] == 1
+
+
+@test
+def test_a_paraphrased_topic_still_resolves():
+    """FalkorDB's CONTAINS is a plain substring test, so "lift logic" does
+    not match "lift control logic" -- verified. Paraphrasing the topic back
+    is exactly what a model does, hence the word-overlap fallback."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.link_event_topics(
+        store.record_event(sid, "Planner", "message", "x", speaker="user"),
+        ["lift control logic"])
+    assert store.resolve_topic("lift control logic") == "lift control logic"
+    assert store.resolve_topic("lift") == "lift control logic"
+    assert store.resolve_topic("Lift Logic") == "lift control logic"
+    assert store.resolve_topic("tax return") is None
+
+
+@test
+def test_reading_a_topic_spans_sessions_and_returns_both_sides():
+    """The point of indexing by subject rather than by session: work that
+    ran across three chats comes back as one thread."""
+    store = empty_store()
+    s1 = store.start_session(user="Siddhi", session_id="s1")
+    a = store.record_event(s1, "Planner", "message", "design a lift",
+                           speaker="user")
+    b = store.record_event(s1, "Planner", "message", "use a state machine",
+                           speaker="Planner")
+    s2 = store.start_session(user="Siddhi", session_id="s2")
+    c = store.record_event(s2, "Planner", "message", "what about door timing",
+                           speaker="user")
+    for eid in (a, b, c):
+        store.link_event_topics(eid, ["lift control logic"])
+
+    result = store.read_topic("lift logic")
+    assert result["topic"] == "lift control logic", result
+    assert len(result["turns"]) == 3, result["turns"]
+    assert {t["session"] for t in result["turns"]} == {"s1", "s2"}
+    assert [t["speaker"] for t in result["turns"]] == \
+        ["user", "Planner", "user"], "both sides, in order"
+
+
+@test
+def test_a_removed_conversation_does_not_come_back_through_a_topic():
+    """Removing a chat has to close every way back in, or topics become a
+    hole in the removal."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-gone")
+    store.link_event_topics(
+        store.record_event(sid, "Planner", "message", "secret plan",
+                           speaker="user"),
+        ["lift control logic"])
+    assert len(store.read_topic("lift control logic")["turns"]) == 1
+    store.hide_session(sid)
+    assert store.read_topic("lift control logic")["turns"] == [], \
+        "a hidden conversation must not be readable through its topic"
+
+
+@test
+def test_an_unknown_topic_reports_what_was_asked():
+    store = empty_store()
+    store.start_session(user="Siddhi", session_id="s1")
+    result = store.read_topic("nothing like this")
+    assert result["topic"] is None and result["asked"] == "nothing like this"
+
+
+# ------------------------------------------------------------- the curator
+@test
+def test_the_curator_writes_topics_mentions_facts_and_rules():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.remember_fact(sid, "Planner", "Siddhi", "WRITES_IN", "Java",
+                        object_type="Language")
+    eid = store.record_event(sid, "Planner", "message",
+                             "comment every line. fizzbuzz in java",
+                             speaker="user")
+    out = apply_curation(store, sid, "Planner", [eid], {
+        "topics": ["FizzBuzz in Java"],
+        "entities": ["Java"],
+        "facts": [{"subject": "Siddhi", "predicate": "prefers",
+                   "object": "Java", "object_type": "Language"}],
+        "rules": [{"name": "comment every line", "trigger": "writing code",
+                   "action": "add a comment to each line"}],
+    })
+    assert out.topics == ["fizzbuzz in java"], out
+    assert out.entities == ["Java"], out
+    assert out.facts == ["Siddhi PREFERS Java"], out.facts
+    assert out.rules == ["comment every line"], out
+    assert store.procedure_exists("comment every line")
+
+
+@test
+def test_the_same_fact_twice_is_written_once():
+    """A person restating something is ordinary, and remember_fact always
+    CREATEs. Without the guard, "I prefer Java" said twice is two identical
+    open edges and recall reports the preference twice."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "java please",
+                             speaker="user")
+    data = {"topics": [], "entities": [], "rules": [],
+            "facts": [{"subject": "Siddhi", "predicate": "PREFERS",
+                       "object": "Java"}]}
+    first = apply_curation(store, sid, "Planner", [eid], data)
+    second = apply_curation(store, sid, "Planner", [eid], data)
+    assert first.facts == ["Siddhi PREFERS Java"], first
+    assert second.facts == [], second
+    assert any("already known" in s for s in second.skipped), second.skipped
+    assert store._read(
+        "MATCH ()-[r:PREFERS]->() WHERE r.valid_to IS NULL "
+        "RETURN count(r)")[0][0] == 1
+
+
+@test
+def test_the_same_fact_on_a_different_date_is_a_different_fact():
+    """`when` is part of a fact's identity. Two appointments with the same
+    doctor on different dates are both true -- the distinction
+    retire_open_fact had to learn in bug 2.2."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "two visits",
+                             speaker="user")
+    for day in ("2026-10-20", "2026-10-22"):
+        apply_curation(store, sid, "Planner", [eid], {
+            "topics": [], "entities": [], "rules": [],
+            "facts": [{"subject": "Siddhi", "predicate": "HAS_APPOINTMENT",
+                       "object": "doctor", "when": day}]})
+    assert store._read(
+        "MATCH ()-[r:HAS_APPOINTMENT]->() WHERE r.valid_to IS NULL "
+        "RETURN count(r)")[0][0] == 2
+
+
+@test
+def test_a_rule_already_in_force_is_not_relearned():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "always java",
+                             speaker="user")
+    data = {"topics": [], "entities": [], "facts": [],
+            "rules": [{"name": "use java", "trigger": "code",
+                       "action": "write Java"}]}
+    apply_curation(store, sid, "Planner", [eid], data)
+    again = apply_curation(store, sid, "Planner", [eid], data)
+    assert again.rules == [], again
+    assert store._read(
+        "MATCH (p:Procedure) WHERE p.valid_to IS NULL "
+        "RETURN count(p)")[0][0] == 1
+
+
+@test
+def test_a_scoped_rule_still_reaches_through_the_uses_edge():
+    """Demo moment 4. A rule taught about a system must fire for a project
+    that merely USES it -- a project the rule never names."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store._write("CREATE (:Project {name:'Billing v2'}), "
+                 "(:System {name:'Ledger Service'})")
+    store.assert_fact(sid, "Planner", "USES", "Billing v2", "Ledger Service")
+    eid = store.record_event(sid, "Planner", "message", "tell priya",
+                             speaker="user")
+    apply_curation(store, sid, "Planner", [eid], {
+        "topics": [], "entities": [], "facts": [],
+        "rules": [{"name": "notify-finance-lead",
+                   "trigger": "a finance system is affected",
+                   "action": "notify Priya Nair",
+                   "applies_to_systems": ["Ledger Service"]}]})
+    hits = store.get_applicable_procedures("Project", "Billing v2")
+    assert hits and hits[0]["name"] == "notify-finance-lead", hits
+    assert "via system" in hits[0]["matched"], hits
+
+
+@test
+def test_one_bad_fact_does_not_cost_the_rest_of_the_turn():
+    """Each clause is guarded separately on purpose."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "mixed", speaker="user")
+    out = apply_curation(store, sid, "Planner", [eid], {
+        "topics": ["something real"],
+        "entities": [],
+        "facts": [{"subject": "", "predicate": "BROKEN", "object": ""},
+                  {"subject": "Siddhi", "predicate": "LIKES",
+                   "object": "tea"}],
+        "rules": [],
+    })
+    assert out.topics == ["something real"], out
+    assert out.facts == ["Siddhi LIKES tea"], out.facts
+    assert out.skipped, "the malformed fact should be reported, not silent"
+
+
+@test
+def test_a_curator_cannot_impersonate_a_behavioural_type():
+    """ON_TOPIC and Topic are reserved, like every other type the system
+    attaches behaviour to."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "x", speaker="user")
+    out = apply_curation(store, sid, "Planner", [eid], {
+        "topics": [], "entities": [], "rules": [],
+        "facts": [{"subject": "a", "predicate": "ON_TOPIC", "object": "b"}]})
+    assert out.facts == [], out
+    assert any("ON_TOPIC" in s for s in out.skipped), out.skipped
+
+
+@test
+def test_a_model_returning_a_string_instead_of_a_list_is_tolerated():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "x", speaker="user")
+    out = apply_curation(store, sid, "Planner", [eid],
+                         {"topics": "lift control logic", "entities": [],
+                          "facts": [], "rules": []})
+    assert out.topics == ["lift control logic"], out
+
+
+@test
+def test_the_curator_is_told_what_the_graph_already_holds():
+    """Reuse is driven by the graph, not by hoping the model is consistent
+    with itself -- which docs/TESTING.md section 5 records that it is not."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.remember_fact(sid, "Planner", "Siddhi", "WRITES_IN", "Java",
+                        object_type="Language")
+    store.link_event_topics(
+        store.record_event(sid, "Planner", "message", "x", speaker="user"),
+        ["lift control logic"])
+    prompt = build_prompt(store, "and the doors?", "Door timing next.")
+    assert "lift control logic" in prompt
+    assert "Java" in prompt
+    assert "and the doors?" in prompt and "Door timing next." in prompt
+
+
+# ------------------------------------------------- the agent, end to end
+@test
+def test_the_planner_can_no_longer_write_facts_itself():
+    """Decision (b): one writer. The Planner converses and reads."""
+    assert "remember_fact" not in PLANNER_TOOLS
+    assert "learn_procedure" not in PLANNER_TOOLS
+    # Retirement stays: a person correcting something mid-conversation needs
+    # it then, and the curator runs afterwards. It also preserves bug 2.2's
+    # ordering -- retire during the turn, assert after it.
+    assert "retire_fact" in PLANNER_TOOLS
+    assert "read_topic" in PLANNER_TOOLS
+
+
+@test
+def test_a_turn_curates_itself_and_links_both_sides():
+    """The question and the answer are about the same thing. Linking only
+    one would leave half the conversation unreachable from its subject."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    turn = build_planner(store, sid, FakeAdapter([
+        says("Use a state machine per car."),
+        curation(topics=["lift control logic"]),
+    ])).run("how do i design lift control logic")
+
+    assert turn.curation.topics == ["lift control logic"], turn.curation
+    linked = store._read(
+        "MATCH (e:Event)-[:ON_TOPIC]->(:Topic) RETURN count(e)")[0][0]
+    assert linked == 2, f"both the question and the answer: {linked}"
+
+
+@test
+def test_a_broken_curator_does_not_break_the_turn():
+    """Curation runs after the answer is already in the graph. A curator
+    that could take the reply down with it would be a worse trade than
+    losing some edges."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    turn = build_planner(store, sid, FakeAdapter([
+        says("Here is your answer."),
+        says("I am afraid I cannot produce JSON today."),
+        says("Still not JSON."),
+    ])).run("anything")
+
+    assert turn.text == "Here is your answer.", "the reply must survive"
+    assert turn.curation.error, "the failure must be reported, not swallowed"
+    assert turn.curation.wrote_anything is False
+    assert len(store.session_transcript(sid)) == 2, \
+        "both sides of the exchange are still recorded"
+
+
+@test
+def test_the_topic_index_is_injected_into_the_planners_prompt():
+    """A model cannot ask for a conversation whose existence nothing has
+    told it about. recent_conversations lists sessions by their *opening
+    line*, which for a long design discussion is the least representative
+    sentence in it."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.link_event_topics(
+        store.record_event(sid, "Planner", "message", "x", speaker="user"),
+        ["lift control logic"])
+    planner = build_planner(store, sid, FakeAdapter([says("hi")]))
+    prompt = planner.system_prompt()
+    assert "lift control logic" in prompt, prompt[-400:]
+    assert "read_topic" in prompt
+
+
+@test
+def test_resuming_work_in_a_new_session_through_the_topic():
+    """The scenario this whole layer exists for: a long back-and-forth,
+    then a fresh chat that picks it up by subject."""
+    store = empty_store()
+    s1 = store.start_session(user="Siddhi", session_id="s1")
+    planner = build_planner(store, s1, FakeAdapter([
+        says("Use one state machine per car."),
+        curation(topics=["lift control logic"]),
+        says("Door timing should be a separate timer."),
+        curation(topics=["lift control logic"]),
+    ]))
+    planner.run("how do i design lift control logic")
+    planner.run("what about the doors")
+
+    # A new session. Nothing carries over but the graph.
+    s2 = store.start_session(user="Siddhi", session_id="s2")
+    resumed = build_planner(store, s2, FakeAdapter([
+        calls("read_topic", {"topic": "lift logic"}),
+        says("We settled on one state machine per car; doors were next."),
+        curation(topics=["lift control logic"]),
+    ]))
+    assert "lift control logic" in resumed.system_prompt(), \
+        "the index must name the topic before anything is asked"
+
+    turn = resumed.run("lets pick up the lift logic")
+    read = json.loads(turn.steps[0].result)
+    assert read["topic"] == "lift control logic", read
+    said = " ".join(t["text"] for t in read["turns"])
+    assert "state machine per car" in said, read["turns"]
+    assert "what about the doors" in said, read["turns"]
+
+
+print()
+print("=" * 62)
+print(f"{len(PASSED)}/{len(PASSED) + len(FAILED)} tests passed")
+for name, why in FAILED:
+    print(f"  FAILED: {name} -- {why}")
+sys.exit(1 if FAILED else 0)

@@ -31,10 +31,30 @@ KEY_PROPERTY = {
     "Task": "id",
     "Ticket": "id",
     "Agent": "name",
+    "Topic": "name",
 }
 
-# What an Event may be ABOUT.
+# What an Event may be ABOUT *by label*. Still closed, because the label is
+# interpolated into the query. The curator links a turn to entities it
+# mentions without naming a label at all -- see link_event_entities, which
+# resolves by name and joins on internal id, so nothing is interpolated.
 ENTITY_LABELS = ("Person", "Project", "System", "Decision")
+
+# Labels that are never "a thing someone mentions", so they are excluded
+# wherever a turn is linked to what it talked about. Three groups: plumbing
+# (Event, Session, Lookup, Agent), the topic index itself, and behavioural
+# nodes whose `name` is an internal handle rather than something a person
+# refers to -- a Procedure called "comment every line" would otherwise be
+# offered to the curator as an entity to mention.
+NON_ENTITY_LABELS = ("Event", "Session", "Lookup", "Agent", "Topic",
+                     "Procedure", "Insight", "Task", "Ticket")
+
+
+def not_entity_clause(var="n"):
+    """Cypher excluding the labels above for `var`. Built from the tuple
+    rather than written out, so the three call sites cannot drift apart."""
+    return " AND ".join(f"NOT {var}:{label}" for label in NON_ENTITY_LABELS)
+
 
 # Closed set of Event.kind values.
 EVENT_KINDS = ("message", "decision", "action", "handoff", "correction", "consolidation")
@@ -52,6 +72,9 @@ INDEXES = [
     ("Person", "name"), ("Project", "name"), ("System", "name"),
     ("Decision", "id"), ("Procedure", "id"), ("Insight", "id"),
     ("Lookup", "id"),
+    # Every turn resolves its topics by name, so this one is read on the
+    # hot path rather than only by the demo.
+    ("Topic", "name"),
 ]
 
 
@@ -80,7 +103,7 @@ _PREDICATE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,40}$")
 # expects properties an open fact does not have.
 RESERVED_LABELS = frozenset({
     "Agent", "Session", "Event", "Decision", "Procedure", "Insight",
-    "Task", "Ticket", "Lookup",
+    "Task", "Ticket", "Lookup", "Topic",
 })
 
 # Likewise for edges: these carry behaviour elsewhere in the system.
@@ -88,7 +111,7 @@ RESERVED_PREDICATES = frozenset({
     "HAS_EVENT", "PERFORMED", "ABOUT", "RECORDED_IN", "LEARNED_FROM",
     "DERIVED_FROM", "MADE", "SUPERSEDES", "CREATED", "ASSIGNED_TO",
     "CONCERNS", "FILED", "BLOCKS", "CITES", "APPLIES_TO",
-    "READ", "RETURNED",
+    "READ", "RETURNED", "ON_TOPIC",
 }) | set(FACT_ENDPOINTS)
 
 

@@ -33,11 +33,20 @@ REVIEWER_TRIGGER = (
 )
 
 
-def build_planner(store, session_id, llm, prompt=None, **kwargs) -> Agent:
+def build_planner(store, session_id, llm, prompt=None, curator=None,
+                  **kwargs) -> Agent:
     # The Planner carries its standing rules in context. It answers whatever a
     # person types, and a rule taught once has to hold on the turns where the
     # model sees no reason to consult its memory at all.
     kwargs.setdefault("standing_rules", True)
+    # Same argument for the topic index: a model cannot ask to continue a
+    # conversation whose existence nothing has told it about.
+    kwargs.setdefault("topic_index", True)
+    # `curator` defaults to the Planner's own adapter, so curation is on
+    # unless a caller deliberately passes curator=False. Tests that drive a
+    # scripted fake adapter do exactly that -- a fake with no curation script
+    # would spend its queued replies on the wrong call.
+    kwargs["curator"] = llm if curator is None else (curator or None)
     return Agent(
         name=PLANNER,
         toolbox=Toolbox(store, PLANNER, session_id, allowed=PLANNER_TOOLS),

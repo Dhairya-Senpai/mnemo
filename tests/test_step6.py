@@ -326,16 +326,27 @@ def test_insight_with_an_unknown_source_event_is_refused():
 def test_a_rule_taught_in_one_session_fires_in_another():
     store = fresh_store()
     s1 = store.start_session(user="demo-user", session_id="s1")
+    # The Planner no longer writes rules; the curator does. So the scripted
+    # adapter serves two calls in order: the Planner's reply, then the
+    # curation JSON for that turn. This is the path the real system takes.
     planner = build_planner(store, s1, FakeAdapter([
-        calls("learn_procedure", {
-            "name": "notify-finance-lead",
-            "trigger": "a finance system is affected",
-            "action": "notify Priya Nair",
-            "applies_to_systems": ["Ledger Service"],
-        }),
         says("Noted, I'll apply that from now on."),
+        says(json.dumps({
+            "topics": ["finance notifications"],
+            "entities": [],
+            "facts": [],
+            "rules": [{
+                "name": "notify-finance-lead",
+                "trigger": "a finance system is affected",
+                "action": "notify Priya Nair",
+                "applies_to_systems": ["Ledger Service"],
+                "applies_to_projects": [],
+            }],
+        })),
     ]))
-    planner.run("whenever a finance system is affected, notify Priya")
+    turn = planner.run("whenever a finance system is affected, notify Priya")
+    assert turn.curation is not None, "the turn should have been curated"
+    assert turn.curation.rules == ["notify-finance-lead"], turn.curation
 
     # A new session. The Reviewer is told nothing about the rule.
     s2 = store.start_session(user="demo-user", session_id="s2")

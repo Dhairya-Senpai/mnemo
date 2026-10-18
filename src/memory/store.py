@@ -34,7 +34,9 @@ from .schema import (
     ENTITY_LABELS,
     EVENT_KINDS,
     FACT_ENDPOINTS,
+    INDEXES,
     PROCEDURE_SCOPES,
+    not_entity_clause,
     check_fact_type,
     check_label,
     clean_label as check_open_label,
@@ -117,6 +119,7 @@ class MemoryStore:
         # ran instead of estimating it. One store per thread, summed at the end.
         self.reads = 0
         self.writes = 0
+        self._indexed = False
 
     # ----------------------------------------------------------------- plumbing
 
@@ -164,10 +167,42 @@ class MemoryStore:
     def now(self):
         return self._clock()
 
+    def ensure_indexes(self):
+        """Create this schema's indexes on this graph, if they are missing.
+
+        Indexes used to be created only by `scripts/seed.py`, so the two
+        demo graphs had all eleven and every workspace made by conversation
+        had none -- the graphs actually being used were the unindexed ones.
+        That is the same blind spot as the test fixtures described in
+        docs/TESTING.md section 1: the seeded path was healthy and the
+        unseeded path was never looked at.
+
+        Deliberately not called from __init__. CREATE INDEX is a write, and
+        a write brings the graph's Redis key into being; doing it at
+        construction would mean a brand-new workspace was never again read
+        before it existed, and the empty-key path that test_unseeded.py
+        guards would quietly stop being exercised. First write is the right
+        moment, and start_session is the first write any workspace sees.
+
+        FalkorDB has no `CREATE INDEX IF NOT EXISTS` -- verified, it is a
+        parse error rather than a no-op -- so a repeat raises "already
+        indexed", and only that one message is swallowed.
+        """
+        if self._indexed:
+            return
+        for label, prop in INDEXES:
+            try:
+                self._write(f"CREATE INDEX FOR (n:{label}) ON (n.{prop})")
+            except ResponseError as exc:
+                if "already indexed" not in str(exc).lower():
+                    raise
+        self._indexed = True
+
     # ------------------------------------------------------------------ episodic
 
     def start_session(self, user, session_id=None, started_at=None):
         """Open an episodic container. Everything else hangs off a session."""
+        self.ensure_indexes()
         sid = session_id or self._new_id("sess")
         self._write(
             "CREATE (:Session {id:$id, started_at:$started_at, user:$user})",
@@ -337,6 +372,180 @@ class MemoryStore:
         )
         return [{"id": r[0], "ts": r[1], "speaker": r[2], "text": r[3]}
                 for r in rows]
+
+    # -------------------------------------------------------------------- topics
+    #
+    # A turn used to be an island: record_event accepts an `about` argument
+    # that wires an episode to the entities it touched, and the agent loop
+    # never passed one. Measured on the three workspaces in real use, 47 of
+    # 47 utterances had no outgoing edge at all -- every message stored, and
+    # none of it reachable from anything it was about. These four methods and
+    # the curator that calls them are what close that.
+
+    @staticmethod
+    def _clean_topic(name):
+        """Normalise a topic so the same subject lands on one node.
+
+        Topics come from a model, and docs/TESTING.md section 5 records what
+        that is worth: the same allergy sentence produced IS_ALLERGIC_TO on
+        one run and HAS_ALLERGY on the next. Case and spacing are the cheap
+        half of that problem and this fixes them; genuine synonyms it cannot.
+
+        Unlike a label or a relationship type, a topic is a property *value*,
+        so it travels as a query parameter and carries no injection risk.
+        The normalising here is purely against fragmentation.
+        """
+        text = " ".join((name or "").split()).lower()
+        if not text:
+            raise ValueError("a topic needs a name")
+        return text[:80]
+
+    def link_event_topics(self, event_id, topics):
+        """Attach one turn to the subjects it was about.
+
+        Returns the topic names actually written, which is what lets the
+        caller report what it did rather than assert it.
+        """
+        if not self._read("MATCH (e:Event {id:$eid}) RETURN e.id", eid=event_id):
+            # The same failure as bug 2.1 in docs/TESTING.md: a MATCH that
+            # finds nothing makes the rest of the query a silent no-op. An
+            # id was handed to us, so a missing event is a real fault.
+            raise LookupError(f"cannot add topics: no event {event_id!r}")
+        written = []
+        for raw in topics or []:
+            try:
+                name = self._clean_topic(raw)
+            except ValueError:
+                continue                   # skip junk, never fail the turn
+            self._write(
+                "MATCH (e:Event {id:$eid}) "
+                "MERGE (t:Topic {name:$name}) "
+                "ON CREATE SET t.first_seen = $now "
+                "MERGE (e)-[:ON_TOPIC]->(t)",
+                eid=event_id, name=name, now=self.now())
+            written.append(name)
+        return written
+
+    def link_event_entities(self, event_id, names):
+        """Link a turn to entities that **already exist**, by name.
+
+        The split that keeps this from filling the graph with scenery:
+        mentions connect a turn to things already known, while facts create
+        what is new. A model naming "Tuesday" in passing should not mint a
+        node; a model stating "the review is on Tuesday" should, and that
+        goes through remember_fact.
+
+        No label is named anywhere here, so nothing is interpolated into the
+        query -- the name travels as a parameter and the join is on internal
+        id. That is exactly why this reaches open-layer entities such as
+        Appointment or Language, which ENTITY_LABELS deliberately does not
+        list. ABOUT is reused rather than a new MENTIONS type being invented,
+        per the argument in docs/SCHEMA.md for Insight sharing it: "what is
+        this node concerned with" is the same question either way.
+        """
+        linked = []
+        for raw in names or []:
+            name = " ".join((raw or "").split())
+            if not name:
+                continue
+            res = self._write(
+                f"MATCH (e:Event {{id:$eid}}) "
+                f"MATCH (n) WHERE n.name = $name AND {not_entity_clause('n')} "
+                f"MERGE (e)-[:ABOUT]->(n)",
+                eid=event_id, name=name)
+            if res.relationships_created:
+                linked.append(name)
+        return linked
+
+    def topic_index(self, limit=12):
+        """One line per subject this workspace has discussed, newest first.
+
+        This is the index, not the content, and the distinction is the whole
+        design. Injecting past turns into every prompt would re-open the bug
+        in docs/TESTING.md section 3, attempt 3 -- an agent reading back its
+        own prose and repeating a fact that had since been retired, because
+        a sentence cannot carry valid_to. Injecting the *index* tells the
+        model the conversation exists without putting stale prose in front
+        of it, and it fetches the real thing by name only when it is wanted.
+
+        Only utterances count. The agent's internal working record is not a
+        turn of conversation.
+        """
+        rows = self._read(
+            "MATCH (t:Topic)<-[:ON_TOPIC]-(e:Event) "
+            "WHERE e.speaker IS NOT NULL "
+            # Tie-broken on id, not on name. Timestamps are second-precision,
+            # so two subjects touched in one turn tie on `last` and would
+            # otherwise order alphabetically -- in an index whose whole claim
+            # is "most recently discussed". Ids carry a microsecond prefix and
+            # sort in time order, which is why the convention everywhere in
+            # this store is ORDER BY (ts, id) and never ts alone.
+            "WITH t, count(e) AS turns, max(e.ts) AS last, max(e.id) AS seq "
+            "RETURN t.name, turns, last "
+            "ORDER BY last DESC, seq DESC LIMIT $limit",
+            limit=limit,
+        )
+        return [{"topic": r[0], "turns": r[1], "last": r[2]} for r in rows]
+
+    def resolve_topic(self, name):
+        """Find the stored topic a loosely-worded request means, or None.
+
+        Exact match, then substring either way, then best overlap of words.
+        The fallbacks are not decoration: FalkorDB's CONTAINS is a plain
+        substring test, so "lift logic" does not match "lift control logic"
+        -- verified -- and paraphrasing the topic back is exactly what a
+        model does. Topic counts are in the tens, so scoring them in Python
+        costs nothing and forgives far more than Cypher can.
+        """
+        wanted = self._clean_topic(name)
+        rows = self._read("MATCH (t:Topic) RETURN t.name")
+        names = [r[0] for r in rows]
+        if wanted in names:
+            return wanted
+        for stored in names:
+            if wanted in stored or stored in wanted:
+                return stored
+        words = set(wanted.split())
+        best, score = None, 0
+        for stored in names:
+            shared = len(words & set(stored.split()))
+            if shared > score:
+                best, score = stored, shared
+        return best
+
+    def read_topic(self, name, limit=100):
+        """Every turn on one subject, both sides, verbatim, across sessions.
+
+        This is read_conversation organised by subject instead of by
+        session, and it is what makes "let's pick up the lift logic" work
+        when the lift was discussed across three different chats.
+
+        Both sides come back whole, deliberately. Ambient recall leaves an
+        agent's prose out because it is unreliable as fact (docs/TESTING.md
+        section 3), but a conversation asked for by name is being resumed,
+        and there the replies *are* the thing being resumed -- the same
+        resolution reached for read_conversation in section 3c.
+
+        Hidden sessions are excluded. Removing a conversation has to remove
+        it from every way back in, or topics become a hole in the removal.
+        """
+        resolved = self.resolve_topic(name)
+        if resolved is None:
+            return {"topic": None, "asked": name, "turns": []}
+        rows = self._read(
+            "MATCH (t:Topic {name:$name})<-[:ON_TOPIC]-(e:Event) "
+            "MATCH (s:Session)-[:HAS_EVENT]->(e) "
+            "WHERE e.speaker IS NOT NULL AND s.hidden IS NULL "
+            "RETURN s.id, e.ts, e.speaker, e.summary "
+            "ORDER BY e.ts, e.id LIMIT $limit",
+            name=resolved, limit=limit,
+        )
+        return {
+            "topic": resolved,
+            "asked": name,
+            "turns": [{"session": r[0], "ts": r[1], "speaker": r[2],
+                       "text": r[3]} for r in rows],
+        }
 
     def list_sessions(self, limit=25):
         """Sessions newest first, with how much was said and how each opened.
@@ -870,6 +1079,44 @@ class MemoryStore:
             f"RETURN count(r)",
             now=self.now(), eid=eid, **params)
         return res.result_set[0][0] if res.result_set else 0
+
+    def open_fact_exists(self, subject, predicate, obj, when=None):
+        """Is this exact fact already current? The curator's duplicate guard.
+
+        With one writer there is no race to lose, but a person restating
+        something across turns is ordinary, and remember_fact always CREATEs.
+        Without this, "I prefer Java" said twice is two identical open edges
+        and `recall_entity` reports the preference twice.
+
+        `when` is part of the identity, not a detail: two appointments with
+        the same doctor on different dates are both legitimately true. That
+        is the same distinction retire_open_fact had to learn -- see bug 2.2
+        in docs/TESTING.md.
+        """
+        rel = check_open_predicate(predicate)
+        where = ["s.name = $subject", "o.name = $obj", "r.valid_to IS NULL"]
+        params = {"subject": subject, "obj": obj}
+        if when:
+            where.append("r.when = $when")
+            params["when"] = when
+        else:
+            where.append("r.when IS NULL")
+        rows = self._read(
+            f"MATCH (s)-[r:{rel}]->(o) WHERE {' AND '.join(where)} "
+            f"RETURN count(r)", **params)
+        return bool(rows and rows[0][0])
+
+    def procedure_exists(self, name):
+        """Is a standing rule of this name already in force?
+
+        Matched on name rather than on wording, because a person who
+        restates a rule has not taught a second rule. Retired rules do not
+        count: re-teaching something you revoked should take effect.
+        """
+        rows = self._read(
+            "MATCH (p:Procedure) WHERE p.name = $name AND p.valid_to IS NULL "
+            "RETURN count(p)", name=name)
+        return bool(rows and rows[0][0])
 
     def recall_entity(self, name, limit=25):
         """Everything known about something, whatever type it turned out to be.

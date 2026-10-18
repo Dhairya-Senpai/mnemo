@@ -62,6 +62,7 @@ class Turn:
     messages: list[Message] = field(default_factory=list)
     stopped_early: bool = False       # hit the tool-call cap
     lookups: list[str] = field(default_factory=list)   # Lookup ids behind it
+    curation: object = None           # what the curator wrote, or None
 
     @property
     def tools_used(self) -> list[str]:
@@ -73,7 +74,7 @@ class Agent:
 
     def __init__(self, name, toolbox, llm: LLMAdapter, prompt=None,
                  prompt_name=None, max_tool_calls=DEFAULT_MAX_TOOL_CALLS,
-                 standing_rules=False):
+                 standing_rules=False, topic_index=False, curator=None):
         if prompt is None and prompt_name is None:
             raise ValueError("pass prompt or prompt_name")
         self.name = name
@@ -89,6 +90,14 @@ class Agent:
         # will not think to look; the Reviewer gets one fixed trigger and must
         # read everything, including its rules.
         self.standing_rules = standing_rules
+        # The index of past subjects, same reasoning as above: a model cannot
+        # ask for a conversation whose existence it does not know about.
+        self.topic_index = topic_index
+        # An adapter for the curation pass, or None to leave the graph
+        # unchanged by this agent's turns. The Planner curates; the Reviewer
+        # does not, because its job is to act on what is there rather than to
+        # learn from a person.
+        self.curator = curator
 
     def system_prompt(self) -> str:
         """Role prompt plus the facts only the runtime knows."""
@@ -110,7 +119,38 @@ class Agent:
             f"{about_user}"
             f"Today's date is {store.now()[:10]}.\n"
             f"{self._standing_rules()}"
+            f"{self._topic_index()}"
         )
+
+    # The index, not the content. Putting past turns themselves in here would
+    # re-open the bug in docs/TESTING.md section 3 attempt 3: an agent reading
+    # back its own prose and repeating a fact retired minutes earlier, because
+    # a sentence has no valid_to. A one-line index carries no assertions, and
+    # the model fetches the real conversation with read_topic when it wants it.
+    #
+    # Without this the model cannot ask at all. "Let's pick up the lift logic"
+    # only works if something already told it a lift conversation exists --
+    # recent_conversations lists sessions by their *opening line*, which for a
+    # long design discussion is the least representative sentence in it.
+    MAX_TOPIC_INDEX = 8
+
+    def _topic_index(self) -> str:
+        """What this workspace has talked about, newest first."""
+        if not self.topic_index:
+            return ""
+        try:
+            topics = self.toolbox.store.topic_index(limit=self.MAX_TOPIC_INDEX)
+        except Exception:
+            return ""                      # never break a turn over this
+        if not topics:
+            return ""
+        lines = "\n".join(
+            f"- {t['topic']} ({t['turns']} turn(s), last {t['last'][:10]})"
+            for t in topics)
+        return (
+            "\nSubjects already discussed in this workspace. To continue one, "
+            "call\nread_topic with the name exactly as written here:\n"
+            + lines + "\n")
 
     # A rule the person taught once has to apply every time, including on the
     # turns where the model sees no reason to consult its memory. Leaving that
@@ -147,7 +187,22 @@ class Agent:
         return self.toolbox.store.record_event(
             self.toolbox.session_id, self.name, "message", text, speaker=speaker)
 
-    def _close(self, text, steps, messages, stopped_early, record) -> Turn:
+    def _curate(self, user_text, reply_text, event_ids):
+        """Second pass: the only thing in the system that writes facts.
+
+        Runs after the answer is already in the graph, so a failure here
+        costs edges and never the reply. Returns None when this agent has no
+        curator, which is how the Reviewer stays a pure reader.
+        """
+        if not (self.curator and reply_text and any(event_ids)):
+            return None
+        from agents.curate import curate_turn          # local: optional path
+        return curate_turn(
+            self.toolbox.store, self.curator, self.toolbox.session_id,
+            self.name, user_text, reply_text, event_ids)
+
+    def _close(self, text, steps, messages, stopped_early, record,
+               user_event=None, user_text="") -> Turn:
         """Write the answer, then point it at the reads that produced it.
 
         The READ edges are what make "why did you say that" a traversal
@@ -159,12 +214,18 @@ class Agent:
         property. That is the honest outcome -- the reads did happen.
         """
         lookups = list(self.toolbox.lookups)
+        curation = None
         if record and text:
             answer_id = self._remember(self.name, text)
             if lookups:
                 self.toolbox.store.link_reasoning(answer_id, lookups)
+            # Both events get the turn's topics and mentions. The question
+            # and the answer are about the same thing, and linking only one
+            # would make half the conversation unreachable from its subject.
+            curation = self._curate(user_text, text, [user_event, answer_id])
         return Turn(text=text, steps=steps, messages=messages,
-                    stopped_early=stopped_early, lookups=lookups)
+                    stopped_early=stopped_early, lookups=lookups,
+                    curation=curation)
 
     def run(self, user_message: str, record=True, speaker="user") -> Turn:
         """Answer one message, running tools until the model stops asking.
@@ -177,8 +238,7 @@ class Agent:
         `record=False` skips the episodic write, for read-only questions
         where an event would be noise.
         """
-        if record:
-            self._remember(speaker, user_message)
+        user_event = self._remember(speaker, user_message) if record else None
 
         # One turn, one trace. The toolbox fills this as the model reads.
         self.toolbox.lookups.clear()
@@ -200,7 +260,8 @@ class Agent:
                 messages.append(Message(role="assistant", text=response.text,
                                         provider_state=response.raw))
                 return self._close(response.text, steps, messages,
-                                   stopped_early, record)
+                                   stopped_early, record,
+                                   user_event, user_message)
 
             # Carry provider_state so the assistant turn replays byte-identically.
             messages.append(Message(
@@ -259,7 +320,8 @@ class Agent:
                 final = self._final_answer(messages)
                 messages.append(Message(role="assistant", text=final,
                                         provider_state=None))
-                return self._close(final, steps, messages, True, record)
+                return self._close(final, steps, messages, True, record,
+                                   user_event, user_message)
 
     def _final_answer(self, messages) -> str:
         """Get prose out of the model once the tool budget is spent.
