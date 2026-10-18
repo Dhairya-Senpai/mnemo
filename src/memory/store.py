@@ -1090,6 +1090,61 @@ class MemoryStore:
 
     # ------------------------------------------------------------------ semantic
 
+    def _check_supersedes(self, old_id, affects):
+        """Refuse a supersede that would retire an unrelated decision.
+
+        Two failures, both seen rather than imagined:
+
+        * **The id names nothing, or something already retired.** The write
+          below is a MATCH, so it simply matched no rows and the caller got
+          a decision id back as though the chain had been extended. Bug 2.1
+          again: a write that finds nothing is not a write that succeeded.
+        * **The two decisions are about different projects.** `ornith:9b`
+          recorded "Dana Ruiz OWNS Ledger Migration" as a Decision and
+          passed the Spring Launch delay as its `supersedes`. Spring Launch
+          was then left with no current decision, because a Project has no
+          status of its own -- its state *is* the decisions affecting it,
+          so retiring the last one blanks it.
+
+        The rule is deliberately narrow: refuse only on positive evidence of
+        a mismatch. If the old decision affects no project there is nothing
+        to orphan and nothing to contradict, so restating a scopeless
+        decision keeps working. Refusing on missing information would block
+        legitimate uses to catch a case we cannot actually prove.
+        """
+        rows = self._read(
+            "MATCH (d:Decision {id:$old}) "
+            "OPTIONAL MATCH (d)-[a:AFFECTS]->(p:Project) "
+            "WHERE a.valid_to IS NULL "
+            "RETURN d.title, d.valid_to, collect(p.name)",
+            old=old_id,
+        )
+        if not rows:
+            raise LookupError(
+                f"cannot supersede {old_id!r}: no decision with that id. "
+                f"Look the current decision up first, or leave `supersedes` "
+                f"out to record this as a new decision."
+            )
+        title, valid_to, old_projects = rows[0]
+        if valid_to is not None:
+            raise ValueError(
+                f"cannot supersede {title!r}: it was already retired on "
+                f"{valid_to}. Supersede the decision that is current now, or "
+                f"leave `supersedes` out."
+            )
+        old_projects = {p for p in old_projects if p}
+        new_projects = {p for p in (affects or ()) if p}
+        if old_projects and not (old_projects & new_projects):
+            scope = ", ".join(sorted(old_projects))
+            raise ValueError(
+                f"cannot supersede {title!r}: it affects {scope}, and this "
+                f"decision does not. Superseding retires it, which would "
+                f"leave {scope} with no decision in force. Add the project "
+                f"to `affects` if this really does replace it; if you are "
+                f"recording a fact about the world rather than replacing a "
+                f"decision, use remember_fact or assert_fact instead."
+            )
+
     def record_decision(self, session_id, agent, title, reason,
                         affects=(), made_by=None, supersedes=None):
         """Record a decision, with provenance, scope, and an optional update chain.
@@ -1108,11 +1163,19 @@ class MemoryStore:
         Planner in its prompt that a preference is not a decision is the
         first line of defence and, on the evidence in docs/TESTING.md, not
         one that holds by itself.
+
+        `supersedes` is checked before anything is written. A live model
+        retired a launch-delay decision by passing its id while recording an
+        ownership fact, which left the project with no current decision at
+        all -- see docs/TESTING.md 4a. Validating first also means a refusal
+        cannot leave a half-written Decision behind.
         """
         if supersedes is None:
             twin = self.similar_decision(title)
             if twin:
                 return twin
+        else:
+            self._check_supersedes(supersedes, affects)
         eid = self.record_event(
             session_id, agent, "decision", f"Recorded decision: {title}",
             about=[("Project", p) for p in affects],
