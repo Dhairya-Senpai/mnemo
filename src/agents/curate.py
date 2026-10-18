@@ -80,19 +80,40 @@ def known_context(store) -> str:
         limit=MAX_KNOWN_ENTITIES,
     )
     entities = [r[0] for r in rows]
+    # Rules in force are shown for the same reason as topics: so the model
+    # reuses rather than re-coins. An agent restating a standing rule in its
+    # reply reads exactly like a person teaching one, and this is the cheap
+    # half of stopping that. `similar_procedure` is the half that holds.
+    try:
+        rules = [p["name"] for p in store.get_applicable_procedures()]
+    except Exception:
+        rules = []
     return (
         f"Topics already in this graph: "
         f"{', '.join(topics) if topics else '(none yet)'}\n"
         f"Known entities: "
         f"{', '.join(entities) if entities else '(none yet)'}\n"
+        f"Standing rules already in force (do not return these again): "
+        f"{', '.join(rules) if rules else '(none yet)'}\n"
     )
 
 
-def build_prompt(store, user_text, reply_text) -> str:
+def build_prompt(store, user_text, reply_text, user=None) -> str:
+    # Naming the person matters as much here as it does in the agent's own
+    # prompt, and for the same reason. Without a referent for "I", the
+    # curator invents a subject: a live run produced a node literally named
+    # "Person", because the prompt said to attribute a fact to the person by
+    # name and never said what the name was. The agent loop had already
+    # learned this (see Agent.system_prompt); the curator had not.
+    who = (
+        f"You are curating a conversation with {user!r}. When they say "
+        f"\"I\", \"me\" or \"my\", that means {user!r} -- use that exact "
+        f"name as the subject of a fact about them.\n" if user else ""
+    )
     return (
-        f"{known_context(store)}\n"
+        f"{who}{known_context(store)}\n"
         f"--- the turn ---\n"
-        f"Person: {user_text}\n\n"
+        f"{user or 'Person'}: {user_text}\n\n"
         f"Assistant: {reply_text}\n"
         f"--- end of turn ---\n\n"
         f"Return the JSON object now."
@@ -125,6 +146,20 @@ def apply_curation(store, session_id, agent, event_ids, data) -> Curation:
 
     topics = [t for t in _as_list(data.get("topics"), MAX_TOPICS)
               if isinstance(t, str) and t.strip()]
+    if not topics:
+        # The curator sees one turn at a time and regularly decides a
+        # follow-up has no subject of its own, which would leave most of a
+        # long discussion unfindable. A conversation is about something, and
+        # a follow-up is about the same thing until it changes -- so the
+        # conversation's own topics carry forward. Read from the graph, not
+        # asked of the model.
+        try:
+            topics = store.session_topics(session_id)
+            if topics:
+                out.skipped.append(f"topics carried from the conversation: "
+                                   f"{', '.join(topics)}")
+        except Exception as exc:
+            out.skipped.append(f"carry-forward: {type(exc).__name__}")
     if topics:
         for eid in event_ids:
             try:
@@ -185,6 +220,15 @@ def apply_curation(store, session_id, agent, event_ids, data) -> Curation:
             if store.procedure_exists(name):
                 out.skipped.append(f"rule already in force: {name}")
                 continue
+            # Not just the same name -- the same instruction worded
+            # differently. The agent restating a rule in its own reply is
+            # the common case, and without this the graph accumulates
+            # "comment every line" alongside "always comment every line",
+            # both injected into every later prompt.
+            twin = store.similar_procedure(action)
+            if twin:
+                out.skipped.append(f"rule already in force as {twin!r}: {name}")
+                continue
             # Scope is what lets a rule taught about Ledger Service fire for
             # Billing v2, a project the rule never names, through the USES
             # edge -- demo moment 4. An unscoped rule is not broken: it is
@@ -216,9 +260,13 @@ def curate_turn(store, adapter, session_id, agent, user_text, reply_text,
     worse trade than losing some edges.
     """
     try:
+        user = store.session_user(session_id)
+    except Exception:
+        user = None
+    try:
         data = ask_json(
             adapter,
-            build_prompt(store, user_text, reply_text),
+            build_prompt(store, user_text, reply_text, user=user),
             required_keys=REQUIRED_KEYS,
             system=load_prompt(),
             cache=cache,

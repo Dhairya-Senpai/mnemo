@@ -348,6 +348,86 @@ workspace the old path still works. `read_topic` earns its place when there
 are many and their opening lines are unhelpful, which is the case it was
 built for and the case a single live run does not prove.
 
+### Three defects the browser found that the tests did not
+
+All three were found by driving the real UI with `ornith:9b`, in a fresh
+workspace, immediately after the suite went green. None of them raised an
+error; all three produced valid JSON and a sensible-looking answer.
+
+**1. A follow-up turn lost its topic.** Turn 1 "I'm working on lift control
+logic in Java" was topiced correctly. Turn 2 "what data structure should
+hold the pending floor requests?" came back with `"topics": []` — the
+curator, seeing one turn in isolation, judged it had no subject of its own.
+A ten-turn design discussion would have left two turns findable and eight
+lost, which is the whole feature failing quietly for the case it was built
+for.
+
+Fixed structurally rather than by prompting, for the fourth time in this
+file: **a turn inherits the topics of the conversation it is in** when the
+curator names none. A conversation is about something, and a follow-up is
+about the same thing until it changes. `session_topics` reads that from the
+graph.
+
+**2. The agent's own restatement became a second rule.** Resuming the work,
+the Planner said "the standing rule is: any code I give you will have a
+comment on every line". The curator read that as a new teaching, and the
+graph ended up holding both:
+
+```
+comment every line of code
+always comment every line of code
+```
+
+`procedure_exists` matched on exact name and missed it. This is section 3's
+problem in a new place — an agent's prose treated as evidence — and it is
+worse for rules than for facts, because every duplicate is injected into
+every later prompt and the bloat compounds. `similar_procedure` now compares
+the content words of the *action*, and rules already in force are shown to
+the curator so it is less likely to re-emit one.
+
+**3. A node literally named `Person`.** The curator prompt said to attribute
+a fact about the person to them by name, and never said what the name was.
+`Agent.system_prompt` had already learned this exact lesson — "without a
+referent for 'I' the agent invents a subject" — and the curator was written
+without it. Now passed the session user.
+
+Worth noting the root cause behind that one, unfixed: `app.py` sets
+`USER = "you"`, so the curator is told it is talking to someone called
+"you". Changing it would orphan facts already stored against that name in
+existing workspaces, so it stands.
+
+### What a live run confirmed
+
+Fresh workspace, three sessions, nothing carried between them but the graph:
+
+```
+session 1  "I am working on lift control logic in Java. For any code you
+            give me, put a comment on every single line."
+           -> topic 'lift control logic'; rule 'comment every line of code'
+
+session 1  "what data structure should hold the pending floor requests?"
+           -> Map<Floor, Queue<Request>>   (topic carried forward)
+
+session 2  (NEW CHAT) "lets pick up the lift logic from where we stopped"
+           -> called read_topic('lift control logic')
+           -> "We left off right after I offered to sketch a small class
+               that wraps the Map<Floor, Queue<Request>> structure"
+
+session 3  (NEW CHAT) "write code to print fibonacci series"
+           tools called: []
+           -> every line commented
+```
+
+Session 2 is the resume working through the new path: the topic index named
+the subject before anything was asked, and `read_topic` was the tool chosen.
+Session 3 is the rule applying with **no tools called at all** — it came
+from injected context, which is the whole reason the rules are injected.
+
+Session 3 answered in **Python, not Java**, and that is correct. The only
+standing instruction given was about comments; "in Java" described the work
+in hand, not a preference. The curator was right not to invent a Java rule
+from it.
+
 ### What the tests caught that a run would not
 
 - **Ordering by timestamp alone.** Two subjects touched in the same second

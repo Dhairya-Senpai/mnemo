@@ -190,7 +190,10 @@ def test_a_standing_rule_is_not_offered_as_an_entity():
     sid = store.start_session(user="Siddhi", session_id="s1")
     store.learn_procedure(sid, "Planner", "comment every line",
                           "writing code", "comment each line")
-    assert "comment every line" not in known_context(store)
+    entity_line = [ln for ln in known_context(store).splitlines()
+                   if ln.startswith("Known entities:")][0]
+    assert "comment every line" not in entity_line, entity_line
+    assert entity_line.endswith("(none yet)"), entity_line
 
 
 @test
@@ -330,6 +333,65 @@ def test_the_curator_writes_topics_mentions_facts_and_rules():
 
 
 @test
+def test_a_follow_up_turn_inherits_the_conversations_topic():
+    """Found on a live run, not in a test.
+
+    Turn 1 "I'm working on lift control logic" was topiced correctly. Turn 2
+    "what data structure should hold the pending floor requests?" came back
+    with an empty topic list -- valid JSON, no error. A ten-turn design
+    discussion would have left two turns findable and eight lost, which is
+    the whole feature failing quietly for the case it was built for.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    first = store.record_event(sid, "Planner", "message",
+                               "lift control logic in java", speaker="user")
+    apply_curation(store, sid, "Planner", [first],
+                   {"topics": ["lift control logic"], "entities": [],
+                    "facts": [], "rules": []})
+
+    follow = store.record_event(sid, "Planner", "message",
+                                "what holds the pending floor requests?",
+                                speaker="user")
+    out = apply_curation(store, sid, "Planner", [follow],
+                         {"topics": [], "entities": [], "facts": [],
+                          "rules": []})
+    assert out.topics == ["lift control logic"], out
+    assert any("carried from the conversation" in s for s in out.skipped),         out.skipped
+    assert store.topic_index()[0]["turns"] == 2
+
+
+@test
+def test_a_new_topic_is_not_overridden_by_the_old_one():
+    """Carry-forward is a fallback, not a rule. A turn that names its own
+    subject keeps it."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    a = store.record_event(sid, "Planner", "message", "lifts", speaker="user")
+    apply_curation(store, sid, "Planner", [a],
+                   {"topics": ["lift control logic"], "entities": [],
+                    "facts": [], "rules": []})
+    b = store.record_event(sid, "Planner", "message", "taxes", speaker="user")
+    out = apply_curation(store, sid, "Planner", [b],
+                         {"topics": ["tax return"], "entities": [],
+                          "facts": [], "rules": []})
+    assert out.topics == ["tax return"], out
+
+
+@test
+def test_carry_forward_does_nothing_in_a_brand_new_conversation():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "hello",
+                             speaker="user")
+    out = apply_curation(store, sid, "Planner", [eid],
+                         {"topics": [], "entities": [], "facts": [],
+                          "rules": []})
+    assert out.topics == [], out
+    assert store._read("MATCH (t:Topic) RETURN count(t)")[0][0] == 0,         "chit-chat must not invent a topic"
+
+
+@test
 def test_the_same_fact_twice_is_written_once():
     """A person restating something is ordinary, and remember_fact always
     CREATEs. Without the guard, "I prefer Java" said twice is two identical
@@ -385,6 +447,81 @@ def test_a_rule_already_in_force_is_not_relearned():
     assert store._read(
         "MATCH (p:Procedure) WHERE p.valid_to IS NULL "
         "RETURN count(p)")[0][0] == 1
+
+
+@test
+def test_the_same_rule_worded_differently_is_not_relearned():
+    """Found by use, in the browser, not by a test.
+
+    The Planner restated a standing rule in its own reply -- "the standing
+    rule is: any code I give you will have a comment on every line" -- and
+    the curator read its own restatement as a new teaching. The graph ended
+    up holding both "comment every line of code" and "always comment every
+    line of code".
+
+    That is TESTING.md section 3's problem in a new place: an agent's prose
+    treated as evidence. It is worse for rules than for facts, because every
+    duplicate is injected into every later prompt and the bloat compounds.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "comments please",
+                             speaker="user")
+    apply_curation(store, sid, "Planner", [eid], {
+        "topics": [], "entities": [], "facts": [],
+        "rules": [{"name": "comment every line of code",
+                   "trigger": "when providing code",
+                   "action": "put a comment on every single line "
+                             "explaining what it does"}]})
+    out = apply_curation(store, sid, "Planner", [eid], {
+        "topics": [], "entities": [], "facts": [],
+        "rules": [{"name": "always comment every line of code",
+                   "trigger": "when providing code",
+                   "action": "include a comment on every single line "
+                             "explaining what it does"}]})
+    assert out.rules == [], out
+    assert any("already in force as" in s for s in out.skipped), out.skipped
+    assert store._read("MATCH (p:Procedure) WHERE p.valid_to IS NULL "
+                       "RETURN count(p)")[0][0] == 1
+
+
+@test
+def test_a_genuinely_different_rule_is_still_learned():
+    """The duplicate guard must not swallow a second, unrelated rule."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "rules", speaker="user")
+    apply_curation(store, sid, "Planner", [eid], {
+        "topics": [], "entities": [], "facts": [],
+        "rules": [{"name": "comment every line", "trigger": "code",
+                   "action": "put a comment on every single line"}]})
+    out = apply_curation(store, sid, "Planner", [eid], {
+        "topics": [], "entities": [], "facts": [],
+        "rules": [{"name": "metric units", "trigger": "measurements",
+                   "action": "always answer in metric units never imperial"}]})
+    assert out.rules == ["metric units"], out
+
+
+@test
+def test_the_curator_is_told_who_it_is_curating_for():
+    """Found by use: a live run produced a Person node literally named
+    "Person". The prompt said to attribute a fact to the person by name and
+    never said what the name was. Agent.system_prompt had already learned
+    this lesson; the curator had not."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    prompt = build_prompt(store, "I work on lifts", "Noted.", user="Siddhi")
+    assert "Siddhi" in prompt, prompt[:200]
+    assert "Person:" not in prompt, "the literal word is what it latched onto"
+
+
+@test
+def test_rules_in_force_are_shown_to_the_curator():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.learn_procedure(sid, "Planner", "comment every line",
+                          "writing code", "comment each line")
+    assert "comment every line" in build_prompt(store, "hi", "hello")
 
 
 @test

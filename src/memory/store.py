@@ -457,6 +457,31 @@ class MemoryStore:
                 linked.append(name)
         return linked
 
+    def session_topics(self, session_id, limit=3):
+        """Topics already attached to this conversation, most recent first.
+
+        What this is for: a curator looking at one turn in isolation often
+        decides a follow-up has no subject of its own. Observed immediately
+        on a live run -- turn 1 "I'm working on lift control logic" was
+        topiced correctly, and turn 2 "what data structure should hold the
+        pending floor requests?" came back with an empty topic list. Valid
+        JSON, no error, and a ten-turn design discussion would end up with
+        two turns findable and eight lost.
+
+        A conversation is about something, and a follow-up is about the same
+        thing until it changes. So the fallback is read from the graph
+        rather than argued for in the prompt -- the same reasoning as every
+        other fix in docs/TESTING.md that actually held: change what the
+        code does, not what the model is asked to do.
+        """
+        rows = self._read(
+            "MATCH (s:Session {id:$sid})-[:HAS_EVENT]->(e:Event)-[:ON_TOPIC]->(t:Topic) "
+            "WITH t, max(e.id) AS seq "
+            "RETURN t.name ORDER BY seq DESC LIMIT $limit",
+            sid=session_id, limit=limit,
+        )
+        return [r[0] for r in rows]
+
     def topic_index(self, limit=12):
         """One line per subject this workspace has discussed, newest first.
 
@@ -1105,6 +1130,53 @@ class MemoryStore:
             f"MATCH (s)-[r:{rel}]->(o) WHERE {' AND '.join(where)} "
             f"RETURN count(r)", **params)
         return bool(rows and rows[0][0])
+
+    @staticmethod
+    def _rule_words(text):
+        """Content words of a rule, for comparing two statements of it."""
+        stop = {"a", "an", "the", "to", "of", "on", "in", "for", "and", "it",
+                "its", "that", "this", "is", "be", "with", "every", "each",
+                "all", "any", "always", "please", "when", "you", "your",
+                "i", "me", "my", "will", "should", "must", "do", "give",
+                "giving", "provide", "providing", "what", "does"}
+        cleaned = "".join(c if c.isalnum() or c.isspace() else " "
+                          for c in (text or "").lower())
+        return {w for w in cleaned.split() if w not in stop and len(w) > 2}
+
+    def similar_procedure(self, action, threshold=0.7):
+        """An in-force rule that already says this, or None.
+
+        Exact-name matching is not enough, and the gap was found by use: the
+        Planner restated a standing rule in its reply ("the standing rule is:
+        any code I give you will have a comment on every line"), the curator
+        read its own restatement as a new teaching, and the graph ended up
+        holding both "comment every line of code" and "always comment every
+        line of code".
+
+        That is the TESTING.md section 3 problem in a new place -- an agent's
+        own prose treated as evidence -- and it is worse for rules than for
+        facts, because every duplicate is injected into every later prompt
+        and the bloat compounds.
+
+        Compared on the content words of the *action*, since that is what a
+        rule does; two people wording the same instruction differently still
+        overlap heavily. Deliberately blunt: it cannot merge genuinely
+        different wordings of the same intent, and says so in TESTING.md.
+        """
+        wanted = self._rule_words(action)
+        if not wanted:
+            return None
+        rows = self._read(
+            "MATCH (p:Procedure) WHERE p.valid_to IS NULL "
+            "RETURN p.name, p.action")
+        for name, existing in rows:
+            other = self._rule_words(existing)
+            if not other:
+                continue
+            overlap = len(wanted & other) / max(len(wanted), len(other))
+            if overlap >= threshold:
+                return name
+        return None
 
     def procedure_exists(self, name):
         """Is a standing rule of this name already in force?
