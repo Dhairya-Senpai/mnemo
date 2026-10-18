@@ -1,4 +1,4 @@
-"""Agent Memory Graph - a chat window whose memory is a FalkorDB graph.
+"""Mnemo - a chat window whose memory is a FalkorDB graph.
 
     streamlit run app.py
 
@@ -43,13 +43,23 @@ from llm import get_adapter  # noqa: E402
 from memory import (MemoryStore, delete_tenant, diff_snapshots,
                     list_tenants, rename_tenant)  # noqa: E402
 
-st.set_page_config(page_title="Agent Memory Graph", layout="wide",
+st.set_page_config(page_title="Mnemo", layout="wide",
                    page_icon="//", initial_sidebar_state="expanded")
 
 # The palette and type scale live in .streamlit/config.toml. These three rules
 # are the ones Streamlit gives no setting for.
 st.markdown("""
 <style>
+/* The name sits in the gap at the head of the sidebar, in the heading
+   face, quiet enough not to compete with the conversation list. */
+.mnemo-mark {
+    font-family: Georgia, 'Iowan Old Style', 'Times New Roman', serif;
+    font-size: 1.3rem;
+    color: #E8E6DC;
+    opacity: .92;
+    padding: .1rem 0 .8rem 0;
+}
+
 /* A conversation row is a row, not a button: no outline, no fill, left
    aligned. The open one is marked by sitting in a well -- darker than the
    sidebar rather than brighter -- because selection is a state, not an
@@ -574,6 +584,8 @@ def window_tools():
 
 # ------------------------------------------------------------------- sidebar
 with st.sidebar:
+    st.markdown("<div class='mnemo-mark'>Mnemo</div>", unsafe_allow_html=True)
+
     # Workspace first: it decides which graph everything below is read from,
     # so it belongs above the things it governs rather than at the foot.
     options = workspaces()
