@@ -158,6 +158,7 @@ is all we need; test before claiming more.)*
 | `Task` | `id`, `status`, `created_at`, `claimed_by`, `claimed_at` | Operational |
 | `Ticket` | `id`, `title`, `created_at` | Operational |
 | `Lookup` | `id`, `tool`, `arguments`, `ts`, `agent`, `session` | Episodic |
+| `Topic` | `name`, `first_seen` | Semantic (identity) |
 
 ### Why each node exists
 
@@ -234,6 +235,31 @@ episode in the organisation's history: making it one would flood
 and put the agent's own reading into the transcript the UI replays. Separate
 label, same tier, different purpose.
 
+**`Topic`** — what a turn of conversation was *about*. Added 18 Oct, and the
+measurement that forced it: across the three workspaces in real use, **47 of
+47 utterances had no outgoing edge at all.** Every message was stored in full
+— `Event.summary` holds the verbatim text — and not one of them was reachable
+from anything it concerned. `record_event` has always accepted an `about`
+argument that wires an episode to its entities; the agent loop never passed
+one, so only facts written by `remember_fact` got edges and the conversation
+that taught them got none.
+
+A topic is in the **closed behavioural core** rather than the open layer,
+by this file's own test for which side of the line a type sits on: code does
+something with it. `topic_index` renders it into the Planner's prompt and
+`read_topic` traverses it. So it is also in `RESERVED_LABELS`, and `ON_TOPIC`
+in `RESERVED_PREDICATES`, so an open fact cannot impersonate either.
+
+Not versioned, for the same reason as `Person` and `System`: the identity
+does not expire. An event never stops having been about something.
+
+Names are lower-cased and whitespace-collapsed on write. That is the cheap
+half of the fragmentation problem in docs/TESTING.md section 5 — it stops
+`Lift Control Logic` and `lift control logic` becoming two nodes, and cannot
+do anything about genuine synonyms. The other half is handled by *showing the
+curator the topics the graph already holds*, so reuse is driven by the graph
+rather than by hoping the model is consistent with itself.
+
 ### Derived project state
 
 A `Project` has no `status`. "Is Spring Launch blocked?" is answered by traversing
@@ -266,6 +292,7 @@ attached, and retiring the decision updates the project's state for free.
 | `(Procedure)-[:LEARNED_FROM]->(Event)` | Same for rules: "you told me this on Oct 15, in session 1." |
 | `(Insight)-[:DERIVED_FROM]->(Event)` | Many-to-one: the episodes a consolidation summarised. It does double duty — it is both the provenance trail and the marker that those episodes have been absorbed, so candidate selection excludes them automatically rather than needing a flag. |
 | `(Event)-[:READ]->(Lookup)` | The reads behind one answer. The `Event` is the agent's own reply, so this edge is what makes "why did you say that" a traversal rather than a screenshot. Attached when the answer is written, so a turn that crashed before answering leaves its lookups unlinked — findable by `Lookup.session`, which is the honest outcome: the reads did happen. |
+| `(Event)-[:ON_TOPIC]->(Topic)` | What a turn was about, so a past conversation is findable by **subject** rather than by its opening line. `recent_conversations` titles a session with its first message, which for a long design discussion is the least representative sentence in it — the decisions are in turns 7 to 9. Not versioned: the episodic tier is immutable. |
 | `(Lookup)-[:RETURNED]->(any)` | Which nodes a read surfaced. Resolved against the graph at write time rather than taken on trust, so a citation exists only if a node really bears that key — the trace cannot claim a fact the graph does not hold. |
 | `(Insight)-[:ABOUT]->(Person\|Project\|System)` | What a consolidation is about, so `recall_related` can lead with it. Shares the `ABOUT` type with events deliberately: "what is this node concerned with" is the same question either way. |
 
@@ -509,11 +536,28 @@ here so the gaps are decided, not forgotten.
 
 ## 9. Indexes
 
-Created at seed time:
+Created on a graph's **first write** (`MemoryStore.ensure_indexes`, called
+from `start_session`), and by the seeder when it rebuilds a demo graph.
+
+Until 18 Oct they were created *only* by the seeder, which meant the two demo
+graphs had all of them and **every workspace created by conversation had
+none** — so the graphs actually in use were the unindexed ones. That is the
+same blind spot as the test fixtures in docs/TESTING.md section 1: the seeded
+path was healthy and the unseeded path was never looked at.
+
+Two details, both verified rather than assumed:
+
+- **FalkorDB has no `CREATE INDEX IF NOT EXISTS`.** It is a parse error, not
+  a no-op. A repeat raises `Attribute 'x' is already indexed`, and only that
+  one message is swallowed.
+- **Indexing must not happen in `__init__`.** `CREATE INDEX` is a write, and
+  a write brings the graph's Redis key into being. Indexing at construction
+  would mean a new workspace was never again read before it existed, quietly
+  retiring the empty-key path that `test_unseeded.py` exists to guard.
 
 - **Nodes**: `Event.id`, `Event.ts`, `Session.id`, `Task.id`, `Task.status`,
   `Ticket.id`, `Person.name`, `Project.name`, `System.name`, `Decision.id`,
-  `Procedure.id`, `Insight.id`, `Lookup.id`
+  `Procedure.id`, `Insight.id`, `Lookup.id`, `Topic.name`
 - **Relationships**: none yet. The syntax is verified to work (T4a), but with
   `IS NULL` unable to use an index (T4b) and a graph this small, there is nothing
   to gain. Add one only when a query measurably needs it.

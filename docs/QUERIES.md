@@ -486,7 +486,122 @@ change under a dozen citations.
 *Source: `MemoryStore.record_lookup`, `link_reasoning`, `find_answer`,
 `explain_answer`, and the capture point in `Toolbox.dispatch`.*
 
-## 17. Indexes
+## 17. Finding a past conversation by subject
+
+**What it answers:** "let's pick up the lift logic from where we stopped."
+
+Until 18 Oct the only route back into past work was `recent_conversations`,
+which titles each session with its **opening line**. For a long design
+discussion that is the least representative sentence in it — the first
+message is the naive version of the problem and the decisions are in turns
+seven to nine. If the chat opened with "hey quick question", nothing matched
+"lift logic" at all.
+
+Worse, a turn had no edges to anything. Measured across the three workspaces
+in real use: **47 of 47 utterances had no outgoing relationship.** Every word
+stored, none of it reachable.
+
+### Writing the link
+
+```cypher
+MATCH (e:Event {id: $eid})
+MERGE (t:Topic {name: $name})
+ON CREATE SET t.first_seen = $now
+MERGE (e)-[:ON_TOPIC]->(t)
+```
+
+`MERGE ... ON CREATE SET` is verified on v6.0.2: `first_seen` keeps the value
+from the first write and is not overwritten on later ones. Both `MERGE`s
+matter — the second stops a turn being linked to the same topic twice when a
+curation is retried.
+
+### The index injected into every prompt
+
+```cypher
+MATCH (t:Topic)<-[:ON_TOPIC]-(e:Event)
+WHERE e.speaker IS NOT NULL
+WITH t, count(e) AS turns, max(e.ts) AS last, max(e.id) AS seq
+RETURN t.name, turns, last
+ORDER BY last DESC, seq DESC LIMIT $limit
+```
+
+Three things are load-bearing here:
+
+- **`e.speaker IS NOT NULL`** keeps the count to actual utterances. An
+  agent's internal working record is not a turn of conversation.
+- **`max(e.id)` as the tie-break.** Timestamps are second-precision, so two
+  subjects touched in one turn tie on `last` and would otherwise order
+  alphabetically — in an index whose whole claim is "most recently
+  discussed". Ids carry a microsecond prefix and sort in time order. This is
+  the same `ORDER BY (ts, id)` convention used everywhere else in the store,
+  and a test caught it being missing here.
+- **`max()` over ISO strings works**, verified — the fixed-width UTC format
+  sorts lexicographically in chronological order.
+
+What goes into the prompt is the *index*, never the content. Injecting past
+turns themselves would re-open the bug in docs/TESTING.md section 3 attempt
+3: an agent reading back its own prose and repeating a fact retired minutes
+earlier, because a sentence has no `valid_to`. A one-line index asserts
+nothing.
+
+### Reading one subject back
+
+```cypher
+MATCH (t:Topic {name: $name})<-[:ON_TOPIC]-(e:Event)
+MATCH (s:Session)-[:HAS_EVENT]->(e)
+WHERE e.speaker IS NOT NULL AND s.hidden IS NULL
+RETURN s.id, e.ts, e.speaker, e.summary
+ORDER BY e.ts, e.id LIMIT $limit
+```
+
+`s.hidden IS NULL` is not optional. Removing a conversation has to close
+every way back into it, or topics become a hole in the removal.
+
+Both sides come back whole, deliberately. Ambient recall leaves an agent's
+prose out because it is unreliable as fact; a conversation asked for **by
+name** is being resumed, and there the replies are the thing being resumed.
+Same resolution as `read_conversation` in TESTING.md section 3c.
+
+### Resolving a name the model paraphrased
+
+`CONTAINS` in FalkorDB is a plain substring test, so `"lift control logic"
+CONTAINS "lift logic"` is **false** — verified. Since paraphrasing the topic
+back is exactly what a model does, resolution is exact match, then substring
+either direction, then best word overlap, scored in Python. Topic counts are
+in the tens, so this costs nothing and forgives far more than Cypher can.
+
+## 18. Linking a turn to what it mentioned
+
+```cypher
+MATCH (e:Event {id: $eid})
+MATCH (n) WHERE n.name = $name
+  AND NOT n:Event AND NOT n:Session AND NOT n:Lookup
+  AND NOT n:Agent AND NOT n:Topic AND NOT n:Procedure
+  AND NOT n:Insight AND NOT n:Task AND NOT n:Ticket
+MERGE (e)-[:ABOUT]->(n)
+```
+
+Three decisions worth defending:
+
+- **`ABOUT` is reused rather than a new `MENTIONS` type invented.** The same
+  argument this schema already makes for `Insight` sharing it: "what is this
+  node concerned with" is the same question either way. A second edge type
+  would be drift.
+- **No label is named anywhere**, so nothing is interpolated into the query.
+  The name travels as a parameter and the join is on internal id — which is
+  how this reaches open-layer entities such as `Appointment` or `Language`
+  that `ENTITY_LABELS` deliberately does not list.
+- **It only links to nodes that already exist.** Mentions connect a turn to
+  what is known; facts create what is new. Without that split every noun a
+  model emitted would mint a node and the graph would fill with scenery.
+
+The exclusion list is built from `NON_ENTITY_LABELS` rather than written out,
+so its three call sites cannot drift apart. It covers plumbing, the topic
+index itself, and behavioural nodes whose `name` is an internal handle — a
+`Procedure` called "comment every line" was being offered to the curator as
+an entity to mention until that was fixed.
+
+## 19. Indexes
 
 ```cypher
 CREATE INDEX FOR (n:Event) ON (n.id)

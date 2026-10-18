@@ -87,7 +87,7 @@ Being specific about this matters more than looking finished.
 
 **Verified by running it:**
 
-- All 146 tests pass against FalkorDB graph module v6.0.2.
+- All 193 tests pass against FalkorDB graph module v6.0.2.
 - Every FalkorDB behaviour claimed in `SCHEMA.md` and `QUERIES.md` was probed
   directly; the probes are reproducible.
 - The concurrency numbers were measured during an actual run, with query

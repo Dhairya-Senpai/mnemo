@@ -261,6 +261,117 @@ invariant was narrowed rather than dropped: it cannot write, and `tenant`
 and `agent` stay bound server-side, so the furthest it reaches is another
 conversation in a workspace the caller already had full write access to.
 
+## 3d. Every message stored, and none of it connected
+
+**Found by:** looking at the graph in the UI and saying "I only see
+preferences and appointments, not the conversation."
+
+That turned out to be half right in a way worth recording, because the first
+instinct — "we are not storing the conversation" — was wrong, and the second
+— "something is missing" — was right.
+
+**The conversation was always stored.** `Event.summary` holds the full
+verbatim text of every message either side. It is how the UI rebuilds a
+transcript from FalkorDB rather than from browser state. What hid it was the
+graph *view*: the default canvas filter excludes `Event`, `Session`, `Lookup`
+and `Agent` as plumbing, so the one layer being asked about was the one layer
+not drawn.
+
+**What was actually missing was edges.** Counted on the three workspaces in
+real use:
+
+```
+personal   utterances= 28   connected to any entity=  0   islands= 28
+work       utterances= 11   connected to any entity=  0   islands= 11
+siddhi     utterances=  8   connected to any entity=  0   islands=  8
+```
+
+**47 of 47.** Not one message had an outgoing edge. The cause was a single
+omitted argument: `record_event` accepts `about`, which wires an episode to
+the entities it touched, and `Agent._remember` never passed one. A fact
+written by `remember_fact` got its `ABOUT` edges; the message that taught it
+got none. So `recall_entity("Java")` returned the one-line extracted fact and
+not the ten turns where the problem was actually worked out.
+
+**Changed:** a `Topic` node, an `ON_TOPIC` edge, and a curator pass that
+writes both. See SCHEMA.md and QUERIES.md sections 17–18.
+
+### Why a separate pass, and not better prompting
+
+Because that had already failed three times (section 3b), and because the
+failure here is structural rather than a matter of wording. One model call
+was doing two jobs — hold a conversation *and* curate the graph — and the
+second job lost whenever the first was interesting. The quiet version is the
+dangerous one: a standing rule the person clearly stated simply never gets
+written, the agent truthfully says "noted", and nothing in the system
+notices.
+
+So the jobs are split. **The Planner converses and reads; the curator
+writes.** `remember_fact` and `learn_procedure` were removed from the
+Planner's tools. One writer means no duplicate-suppression race.
+
+`retire_fact` deliberately stayed with the Planner. Retirement is triggered
+by a person correcting something mid-conversation, where the Planner has the
+context and the curator — which runs afterwards — would be too late. It also
+preserves the ordering bug 2.2 required: retire during the turn, assert
+after it.
+
+### Verified against a live model
+
+`ornith:9b`, fresh workspace, 18 Oct:
+
+```
+session 1: "I am designing lift control logic in Java. For any code you
+            give me, put a comment on every single line."
+  curated -> topics ['lift control logic']
+             rules  ['comment every line of Java code']
+
+session 1: "what data structure should hold the pending floor requests?"
+  curated -> topics ['lift control logic']        (reused, not re-coined)
+
+session 2: "lets pick up the lift logic from where we stopped"
+  -> recovered the PriorityQueue recommendation
+
+session 3: "write code to print fibonacci series"
+  TOOLS: []            <- no tools called at all
+  -> Java, with a comment on every line
+```
+
+The rule was captured although the Planner has no tool to capture one, and
+applied in session 3 although the model called nothing. Both halves come
+from the graph: the curator wrote the rule, and `_standing_rules` read it
+back into the prompt.
+
+Note what session 2 shows honestly: it resumed via `recent_conversations`
+and `read_conversation`, **not** `read_topic`. With one conversation in the
+workspace the old path still works. `read_topic` earns its place when there
+are many and their opening lines are unhelpful, which is the case it was
+built for and the case a single live run does not prove.
+
+### What the tests caught that a run would not
+
+- **Ordering by timestamp alone.** Two subjects touched in the same second
+  tie on `max(e.ts)` and fell back to alphabetical — in an index whose whole
+  claim is "most recently discussed". Fixed by tie-breaking on `max(e.id)`,
+  which is the `ORDER BY (ts, id)` convention the rest of the store already
+  follows and which this query had quietly skipped.
+- **A removed conversation leaking back.** `read_topic` needed
+  `s.hidden IS NULL`, or removing a chat closed the sidebar route and left
+  the topic route wide open.
+- **A `Procedure` offered as an entity to mention.** Its `name` is an
+  internal handle, not something a person refers to.
+
+### And one silent failure in the demo runner
+
+Removing `learn_procedure` from the Planner broke demo moment 4: the rule
+was never written, the Reviewer correctly reported "no standing rules apply
+here", and `run_demo.py` printed **"all 10 moments ran"**. The tool error was
+right there in its own output and nothing was checking it.
+
+The runner now fails a moment whose agent could not call a tool. Same shape
+as every other silent no-op in this file: the failure was visible and nothing
+looked.
+
 ## 4. Still open
 
 - **A person's own words are still recalled after the fact is retired.**
@@ -273,6 +384,16 @@ conversation in a workspace the caller already had full write access to.
 - **Hard deletion.** Removing a conversation retires what it taught but
   keeps it in the graph. See `SCHEMA.md` for the delete path added
   alongside it.
+
+- **The curator costs a second model call per turn.** On a local 9B model
+  that latency is noticeable. It buys reliable capture, which prompting
+  demonstrably did not, but it is a real trade and not a free one.
+
+- **Topic synonyms still fragment.** Normalising case and spacing stops
+  `Lift Control Logic` and `lift control logic` splitting, and showing the
+  curator the existing topics drives reuse, but nothing merges "lift logic"
+  and "elevator control" if the model coins both. Same shape as the
+  predicate fragmentation in section 5, and unsolved for the same reason.
 
 ---
 
