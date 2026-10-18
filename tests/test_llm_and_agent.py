@@ -325,12 +325,15 @@ def test_both_sides_of_the_exchange_are_recorded():
     assert turn.text == "Nothing to do."
     assert turn.steps == []
 
+    # Both halves are written, but only the person's half is *recalled*: an
+    # agent's own prose is output, not evidence, and feeding it back let a
+    # retired fact be repeated out of an old reply. The transcript below is
+    # what proves both were stored.
     after = STORE.recall_recent(limit=200)
-    assert len(after) == before + 2, "both the message and the reply belong in the graph"
-    # recall_recent is newest first: the reply, then what prompted it.
-    assert after[0]["summary"] == "Nothing to do."
-    assert after[1]["summary"] == "just saying hello"
-    assert after[0]["agent"] == "Planner"
+    assert len(after) == before + 1, "the person's message belongs in recall"
+    assert after[0]["summary"] == "just saying hello"
+    assert not [a for a in after if a["summary"] == "Nothing to do."], \
+        "the agent is recalling its own reply"
 
     # And the transcript reads back in conversational order, with speakers.
     said = STORE.session_transcript(SESSION)

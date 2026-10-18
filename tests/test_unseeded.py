@@ -126,9 +126,10 @@ def test_episodic_recall_works_on_an_unseeded_graph():
     store.record_event(sid, "Planner", "message", "first", speaker="user")
     store.record_event(sid, "Planner", "message", "second", speaker="Planner")
 
+    # Recall returns the person's half; an agent's own reply is output, not
+    # evidence, and is covered by test_an_agent_does_not_recall_its_own_prose.
     recent = store.recall_recent(limit=10)
-    assert len(recent) == 2, f"recall_recent lost the history: {recent}"
-    assert [r["summary"] for r in recent] == ["second", "first"], recent
+    assert [r["summary"] for r in recent] == ["first"], recent
     assert len(store.session_transcript(sid)) == 2, "transcript should round-trip"
 
 
@@ -399,6 +400,49 @@ def test_retired_facts_are_still_in_the_graph_after_recall_hides_them():
                        "RETURN r.when, r.valid_to")
     assert len(rows) == 1 and rows[0][1] is not None, \
         "the edge should still exist, carrying an end date"
+
+
+@test
+def test_an_agent_does_not_recall_its_own_prose():
+    """The sentence that outlived the fact it was about.
+
+    Retiring a fact correctly silenced every tool that reads facts. Then the
+    agent read its own earlier answer out of the episode log -- "you already
+    have a dentist appointment on the 20th" -- and said it again. A reply
+    asserts things in sentences rather than in edges, so nothing can retire
+    it.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-prose")
+    store.record_event(sid, "Planner", "message", "can i fly on the 20th?",
+                       speaker="user")
+    store.record_event(sid, "Planner", "message",
+                       "You already have a dentist appointment on the 20th.",
+                       speaker="Planner")
+
+    said = [e["summary"] for e in store.recall_recent(limit=20)]
+    assert "can i fly on the 20th?" in said, "the person's own words are evidence"
+    assert not [s for s in said if "dentist appointment" in s], \
+        "the agent is being fed its own prose back as if it were a fact"
+
+    # It is left out of recall, not removed: the UI still rebuilds both sides.
+    spoken = [m["speaker"] for m in store.session_transcript(sid)]
+    assert spoken == ["user", "Planner"], spoken
+
+
+@test
+def test_recall_recent_still_fills_its_limit():
+    """Dropping replies must not quietly halve what recall returns."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-fill")
+    for i in range(8):
+        store.record_event(sid, "Planner", "message", f"user says {i}",
+                           speaker="user")
+        store.record_event(sid, "Planner", "message", f"agent replies {i}",
+                           speaker="Planner")
+    got = store.recall_recent(limit=5)
+    assert len(got) == 5, f"asked for 5, got {len(got)}"
+    assert all("agent replies" not in e["summary"] for e in got), got
 
 
 # ------------------------------------------------------------------- report

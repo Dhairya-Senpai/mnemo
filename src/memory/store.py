@@ -267,23 +267,41 @@ class MemoryStore:
         """Most recent events, newest first. Episodic recall across sessions.
 
         Ordering is (ts, id) descending because two events can share a second.
+
+        An agent's own replies are left out, and that is not tidiness. A
+        reply is prose the model generated; it asserts things in sentences
+        rather than in edges, so nothing can retire it. Retiring a fact
+        correctly silenced every tool that reads facts, and then the agent
+        read its own earlier answer -- "you already have a dentist
+        appointment on the 20th" -- out of the episode log and said it
+        again. The sentence outlived the fact it was about.
+
+        What an agent said is still in the graph, with its `speaker`, and
+        the UI rebuilds transcripts from it. It is simply not evidence: the
+        substance of a turn is the facts it wrote and what the person
+        actually said, and both of those remain here.
         """
+        # Over-fetch: the agents' own replies are dropped below, and asking
+        # for exactly `limit` rows would return short once they go.
+        window = max(int(limit) * 4, 20)
         if session_id:
             rows = self._read(
                 "MATCH (s:Session {id:$sid})-[:HAS_EVENT]->(e:Event) "
                 "MATCH (a:Agent)-[:PERFORMED]->(e) "
-                "RETURN e.id, e.ts, e.kind, e.summary, a.name, s.id "
+                "RETURN e.id, e.ts, e.kind, e.summary, a.name, s.id, e.speaker "
                 "ORDER BY e.ts DESC, e.id DESC LIMIT $limit",
-                sid=session_id, limit=limit,
+                sid=session_id, limit=window,
             )
         else:
             rows = self._read(
                 "MATCH (s:Session)-[:HAS_EVENT]->(e:Event) "
                 "MATCH (a:Agent)-[:PERFORMED]->(e) "
-                "RETURN e.id, e.ts, e.kind, e.summary, a.name, s.id "
+                "RETURN e.id, e.ts, e.kind, e.summary, a.name, s.id, e.speaker "
                 "ORDER BY e.ts DESC, e.id DESC LIMIT $limit",
-                limit=limit,
+                limit=window,
             )
+        spoken_by_agent = {r[0] for r in self._read("MATCH (a:Agent) RETURN a.name")}
+        rows = [r for r in rows if r[6] not in spoken_by_agent][:int(limit)]
         stale = self._superseded_events([r[0] for r in rows])
         return [
             {"id": r[0], "ts": r[1], "kind": r[2], "summary": r[3],
