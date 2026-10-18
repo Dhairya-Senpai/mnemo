@@ -122,8 +122,6 @@ services:
       OLLAMA_HOST: http://ollama:11434
       LLM_PROVIDER: ollama
       LLM_MODEL: ${MNEMO_MODEL:-ornith:9b}
-      # Only needed if you switch the model picker to Claude in the UI.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     restart: unless-stopped
 
 volumes:

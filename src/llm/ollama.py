@@ -1,19 +1,20 @@
 """Ollama adapter: the same interface, a model running on your own machine.
 
-This file exists to make one claim testable rather than asserted. The project
-says swapping providers is a config change; this is the second provider, and
-nothing outside this file changed to add it. No agent, tool, prompt or test
-knows it exists.
+This is the only adapter that talks to a real model, and nothing outside this
+file knows it exists -- no agent, tool, prompt or test names Ollama. That is
+what the swappable layer buys.
 
-Four things differ from the Anthropic wire format, and each one is handled
-here so the rest of the project never sees them:
+Four things differ between Ollama's wire format and the neutral types in
+`types.py`, and each one is handled here so the rest of the project never
+sees them:
 
 * **No tool-call ids.** Ollama returns a tool call as a name plus arguments,
   and expects the result back keyed by `tool_name`. Our neutral types use an
   id, so ids are synthesized on the way out and resolved back to names on the
   way in, by looking at the assistant turn that requested them.
-* **Tool results are their own role.** Anthropic nests `tool_result` blocks
-  inside a user message; Ollama uses `role: "tool"`, one message per result.
+* **Tool results are their own role.** Our `Message` carries results on the
+  user turn that follows the call; Ollama wants `role: "tool"`, one message
+  per result.
 * **The system prompt is just the first message**, not a separate field.
 * **Context length must be set explicitly.** Ollama defaults to a small
   `num_ctx`, and sixteen tool schemas plus a system prompt will quietly

@@ -3,11 +3,11 @@
 Agents call `adapter.chat(...)` and nothing else. No agent imports a provider
 SDK, and no provider type crosses this boundary.
 
-Deliberately NOT used: the Anthropic SDK's tool runner. It drives the whole
-agentic loop for you, which is genuinely convenient, but the loop would then
-live inside a vendor helper -- swapping providers would mean rewriting the
-agent, not changing a config value. We own the loop (src/agents/loop.py) and
-keep each adapter down to a single request/response translation.
+Deliberately NOT used: a vendor SDK's agent/tool runner. Those drive the
+whole agentic loop for you, which is genuinely convenient, but the loop would
+then live inside a vendor helper -- swapping providers would mean rewriting
+the agent, not changing a config value. We own the loop (src/agents/loop.py)
+and keep each adapter down to a single request/response translation.
 """
 
 from abc import ABC, abstractmethod

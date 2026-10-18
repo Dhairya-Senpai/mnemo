@@ -1,10 +1,9 @@
 # Pinned to the versions this was actually built and tested against, on
 # Python 3.14.6 with FalkorDB graph module v6.0.2.
 #
-# Four packages. Everything else is the standard library -- the Ollama
+# Three packages. Everything else is the standard library -- the Ollama
 # adapter talks HTTP with urllib rather than pulling in a client.
 
 falkordb==1.8.0        # official client; brings redis-py with it
 streamlit==1.66.0      # the chat UI
-anthropic==1.14.0      # the Claude adapter (never exercised live; see README)
 mcp==2.3.0             # the MCP server that exposes the memory tools

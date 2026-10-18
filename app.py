@@ -6,7 +6,6 @@ Needs FalkorDB running (`docker start falkordb`), the graphs seeded
 (`python scripts/seed.py`), and a model configured:
 
     LLM_PROVIDER=ollama  LLM_MODEL=ornith:9b     # local, free
-    LLM_PROVIDER=claude  LLM_MODEL=claude-sonnet-5-5
 
 It looks like any other chat app on purpose: conversations down the left,
 the exchange in the middle, the model picker under the composer. What is not
@@ -322,12 +321,13 @@ def workspaces():
     return list_tenants() or [WORKSPACE_ORDER[0]]
 
 
-# Switching between these mid-conversation is the swappable-adapter claim made
-# visible: the agents, tools, prompts and graph are identical either way.
+# Switching between these mid-conversation is the swappable-layer claim made
+# visible: the agents, tools, prompts and graph are identical either way, and
+# the second model is weak enough that the difference is obvious. Adding a
+# hosted provider back is one adapter file and one line in `llm/__init__.py`.
 CHOICES = {
     "ollama / ornith:9b": ("ollama", {"model": "ornith:9b"}),
-    "claude / sonnet 5.5": ("claude", {"model": "claude-sonnet-5-5"}),
-    "claude / haiku 5.5": ("claude", {"model": "claude-haiku-5-5"}),
+    "ollama / llama3.2:3b": ("ollama", {"model": "llama3.2:3b"}),
 }
 
 
