@@ -332,7 +332,7 @@ def test_a_renamed_conversation_keeps_its_messages():
 
 # -------------------------------- episodes that outlived their facts
 @test
-def test_an_episode_is_marked_when_its_fact_is_retired():
+def test_recall_leaves_out_an_episode_whose_fact_was_retired():
     """The bug this exists for: the clash that would not go away.
 
     Retiring a fact updates the semantic tier and leaves the episodic one
@@ -340,6 +340,10 @@ def test_an_episode_is_marked_when_its_fact_is_retired():
     episode's own words still assert the fact, so a model reading episodes
     reported a double-booking fifteen minutes after the appointment had been
     retired, while the fact queries beside it returned nothing.
+
+    Labelling the episode in place was tried first and was not enough: the
+    model read the label as something worth reporting and narrated the
+    cancellation instead of ignoring it.
     """
     store = empty_store()
     sid = store.start_session(user="Siddhi", session_id="s-stale")
@@ -350,15 +354,13 @@ def test_an_episode_is_marked_when_its_fact_is_retired():
 
     entity = store.recall_entity("Siddhi")
     assert entity["facts_out"] == [], "the fact itself should be gone"
-    learned = [e for e in entity["episodes"] if "HAS_APPOINTMENT" in e["summary"]]
-    assert learned, "the episode should still be there as history"
-    assert learned[0]["superseded"] is True
-    assert "superseded" in learned[0]["summary"], \
-        "a flag alone is easy for a model to skim past; say it in the text"
+    assert not [e for e in entity["episodes"] if "HAS_APPOINTMENT" in e["summary"]], \
+        "a retired fact came back as an episode and will be read as current"
+    assert entity["superseded_episodes"] == 1, "history should still be counted"
 
 
 @test
-def test_an_ordinary_message_is_never_marked_superseded():
+def test_an_ordinary_message_survives_a_retirement():
     """An episode that established nothing has nothing to lose."""
     store = empty_store()
     sid = store.start_session(user="Siddhi", session_id="s-plain")
@@ -366,21 +368,37 @@ def test_an_ordinary_message_is_never_marked_superseded():
     store.remember_fact(sid, "Planner", "Siddhi", "LIKES", "coffee")
     store.retire_open_fact(sid, "Planner", "Siddhi", "LIKES", "coffee", "changed")
 
-    recent = {e["summary"].split("  [")[0]: e["superseded"]
-              for e in store.recall_recent(limit=20)}
-    assert recent["hello there"] is False, "a plain message was marked stale"
-    assert recent["Learned: Siddhi LIKES coffee"] is True
+    said = [e["summary"] for e in store.recall_recent(limit=20)]
+    assert "hello there" in said, "a plain message was dropped as stale"
+    assert "Learned: Siddhi LIKES coffee" not in said, \
+        "the retired fact is still being recalled"
 
 
 @test
-def test_a_still_current_fact_is_not_marked():
+def test_nothing_is_dropped_while_it_is_still_true():
     store = empty_store()
     sid = store.start_session(user="Siddhi", session_id="s-live")
     store.remember_fact(sid, "Planner", "Siddhi", "HAS_APPOINTMENT", "dentist",
                         when="2026-10-21")
-    episodes = store.recall_entity("Siddhi")["episodes"]
-    assert all(e["superseded"] is False for e in episodes), episodes
-    assert all("superseded" not in e["summary"] for e in episodes)
+    entity = store.recall_entity("Siddhi")
+    assert entity["superseded_episodes"] == 0
+    assert [e for e in entity["episodes"] if "HAS_APPOINTMENT" in e["summary"]], \
+        "a current fact's episode should still be recalled"
+
+
+@test
+def test_retired_facts_are_still_in_the_graph_after_recall_hides_them():
+    """Not hidden from the database, only from "what is true now"."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-hist")
+    store.remember_fact(sid, "Planner", "Siddhi", "HAS_APPOINTMENT", "doctor",
+                        when="2026-10-20")
+    store.retire_open_fact(sid, "Planner", "Siddhi", "HAS_APPOINTMENT",
+                           "doctor", "cancelled", when="2026-10-20")
+    rows = store._read("MATCH ()-[r:HAS_APPOINTMENT]->() "
+                       "RETURN r.when, r.valid_to")
+    assert len(rows) == 1 and rows[0][1] is not None, \
+        "the edge should still exist, carrying an end date"
 
 
 # ------------------------------------------------------------------- report

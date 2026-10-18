@@ -237,10 +237,17 @@ class MemoryStore:
         a clash that was retired an hour ago, even while the fact queries
         beside it correctly return nothing.
 
-        So episodes are not hidden or rewritten; they are labelled. An
-        episode counts as superseded when everything it established has since
-        been retired. An episode that established nothing -- an ordinary
+        An episode counts as superseded when everything it established has
+        since been retired. One that established nothing -- an ordinary
         message -- is never superseded, because it asserted nothing to lose.
+
+        Labelling these in place was tried first and was not enough: a small
+        model reads "[superseded]" as something interesting to report, so it
+        narrated the cancelled appointment instead of ignoring it. The recall
+        tools now leave them out and return a count instead. Nothing is lost
+        from the graph -- history is reached through the history tools, which
+        is the same split as everywhere else here: recall answers "what is
+        true now", history answers "what happened".
         """
         ids = [i for i in dict.fromkeys(event_ids) if i]
         if not ids:
@@ -255,11 +262,6 @@ class MemoryStore:
         for eid, valid_to in rows:
             state.setdefault(eid, []).append(valid_to is not None)
         return {eid for eid, retired in state.items() if retired and all(retired)}
-
-    @staticmethod
-    def _mark(summary, superseded):
-        """Say it in the text. A flag beside it is easy for a model to skim past."""
-        return f"{summary}  [superseded - no longer true]" if superseded else summary
 
     def recall_recent(self, limit=10, session_id=None):
         """Most recent events, newest first. Episodic recall across sessions.
@@ -284,11 +286,9 @@ class MemoryStore:
             )
         stale = self._superseded_events([r[0] for r in rows])
         return [
-            {"id": r[0], "ts": r[1], "kind": r[2],
-             "summary": self._mark(r[3], r[0] in stale),
-             "superseded": r[0] in stale,
+            {"id": r[0], "ts": r[1], "kind": r[2], "summary": r[3],
              "agent": r[4], "session": r[5]}
-            for r in rows
+            for r in rows if r[0] not in stale
         ]
 
     def session_user(self, session_id):
@@ -458,10 +458,10 @@ class MemoryStore:
                 {"id": r[0], "text": r[1], "since": r[2]} for r in insights
             ],
             "events": [
-                {"id": r[0], "ts": r[1], "kind": r[2],
-                 "summary": self._mark(r[3], r[0] in stale_events),
-                 "superseded": r[0] in stale_events} for r in events
+                {"id": r[0], "ts": r[1], "kind": r[2], "summary": r[3]}
+                for r in events if r[0] not in stale_events
             ],
+            "superseded_episodes": sum(1 for r in events if r[0] in stale_events),
             "facts_out": [
                 {"type": r[0], "label": r[1], "name": r[2], "since": r[3]} for r in out
             ],
@@ -811,10 +811,10 @@ class MemoryStore:
             "retired": found[0][2] is not None,
             "facts_out": facts(out),
             "facts_in": facts(inc),
-            "episodes": [{"ts": r[0], "kind": r[1],
-                          "summary": self._mark(r[2], r[3] in stale),
-                          "superseded": r[3] in stale}
-                         for r in events],
+            "episodes": [{"ts": r[0], "kind": r[1], "summary": r[2]}
+                         for r in events if r[3] not in stale],
+            # Not hidden, just not recalled: the count says history exists.
+            "superseded_episodes": sum(1 for r in events if r[3] in stale),
         }
 
     def what_is_on(self, date, limit=50):
