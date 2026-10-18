@@ -849,10 +849,14 @@ the tools return, not the one that asked the model to behave.
 
 ## 6. Measured, not estimated
 
-- Concurrency: 16 writer threads, 8 readers, 100 tasks — 484 queries in
-  115 ms, zero double-claims, zero errors. The control run, with the claim
-  written as read-then-write across two queries, had **16 of 16 workers
-  believe they had won**.
+- Concurrency: 16 writer threads, 8 readers, 100 tasks. **100 claims, zero
+  double-claims, zero left open, zero errors — on every run.** Throughput
+  varies, because the readers loop until the writers finish: 460-580
+  queries in 100-136 ms across the runs recorded, around 4,300-4,700
+  queries/sec. An earlier version of this line quoted a single run's totals
+  as if they were fixed, which is the same mistake as estimating.
+  The control run, with the claim written as read-then-write across two
+  queries, had **16 of 16 workers believe they had won**.
 - Tenant isolation: the same question answered "no, blocked upstream" in
   `acme` and "yes, cleared" in `globex`, with no tenant named in any query.
 - A live local model has driven the full agent loop, chosen its own tools,
