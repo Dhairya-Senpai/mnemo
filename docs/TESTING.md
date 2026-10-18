@@ -1007,8 +1007,26 @@ the user filter alone separates them. All the id check added was a silent
 rule that a conversation this app did not create itself does not exist.
 
 That is the same shape as the graph view that could not draw a `Topic`
-(3i): a filter written for one path, quietly excluding every other. Both
-`current_session` and the sidebar now match on `user` only.
+(3i): a filter written for one path, quietly excluding every other.
+
+**And matching on `user` was not enough either.** With the id check gone,
+the Acme graph *still* showed an empty sidebar: its sessions belong to
+`demo-user`, not `you`. Two wrong filters in a row, both narrowing by a
+value that happened to be true on the path they were written for.
+
+The thing actually worth excluding is the agents' own working sessions,
+and who those are is in the graph. The sidebar now lists any session with
+utterances whose owner is not on the agent roster, read with
+`agent_roster()` — so adding an agent excludes it without this being
+edited. Acme shows its seven conversations; `demo` shows three; `globex`
+shows none, correctly, because its seeded session holds no utterances.
+
+**The workspace picker had the mirror of the same bug.** `workspaces()`
+returned what FalkorDB holds *plus* the three built-in names whether or
+not their graphs existed, so a deleted workspace stayed in the list and
+selecting it brought it back — which is how `personal` kept reappearing
+after the database was wiped. It now lists what exists, falling back to a
+single default only on a completely empty instance.
 
 ## 4. Still open
 

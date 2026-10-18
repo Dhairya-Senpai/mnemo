@@ -289,14 +289,37 @@ WORKSPACE_ORDER = ("personal", "acme", "globex")
 NAME_OK = re.compile(r"^[a-z][a-z0-9_]{0,30}$")
 
 
+def agent_user_names(store):
+    """Session owners that are agents, not people, read from the roster.
+
+    `build_reviewer` and friends open their sessions under their own
+    lower-cased name, so this is what separates an agent's working session
+    from a conversation. Taken from the graph rather than hard-coded, so
+    adding an agent does not need this edited.
+    """
+    try:
+        names = {a["agent"].lower() for a in store.agent_roster(exclude=())}
+    except Exception:
+        names = set()
+    return names | {"reviewer", "coder", "archivist", "planner"}
+
+
 def workspace_label(tenant):
     return WORKSPACE_LABELS.get(tenant, tenant.replace("_", " ").title())
 
 
 def workspaces():
-    """What exists, newest first, plus any of the three built-ins missing."""
-    found = list_tenants()
-    return found + [n for n in WORKSPACE_ORDER if n not in found]
+    """What actually exists, newest first.
+
+    This used to append the built-in names whether or not their graphs
+    were there, so a workspace that had been deleted stayed in the picker
+    and selecting it brought it back. The list is read from FalkorDB, and
+    a list that disagrees with the database is worse than a short one.
+
+    The fallback is only for a completely empty instance, where offering
+    nothing would leave no way in.
+    """
+    return list_tenants() or [WORKSPACE_ORDER[0]]
 
 
 # Switching between these mid-conversation is the swappable-adapter claim made
@@ -324,10 +347,13 @@ def current_session(store, key, user, prefix):
     """
     if st.session_state.get(key):
         return st.session_state[key]
-    # Same reasoning as the sidebar: match the user, not the id shape, or a
-    # conversation written by anything but this app is invisible here too.
+    # Same rule as the sidebar: anything a person said, excluding the
+    # agents' own working sessions. Matching one hard-coded user name here
+    # meant opening the Acme graph produced a brand-new empty chat beside
+    # seven real ones.
+    agents = agent_user_names(store)
     existing = [s for s in store.list_sessions(limit=50)
-                if s["user"] == user and s["turns"]]
+                if s["turns"] and (s["user"] or "").lower() not in agents]
     sid = existing[0]["id"] if existing else store.start_session(
         user=user, session_id=f"{prefix}{int(time.time())}")
     st.session_state[key] = sid
@@ -737,20 +763,26 @@ with st.sidebar:
         new_chat(store)
         st.rerun()
 
+    agent_users = agent_user_names(store)
     st.caption("Conversations")
 
     # A session nobody has spoken in has no title and nothing to return to,
     # and listing the one just opened put a second "New chat" directly under
     # the button that makes them. The button is the only way in.
-    # Filtered on `user`, not on the id. The prefix check that used to be
-    # here was redundant -- the agents' own sessions already carry
-    # user='reviewer', 'coder', 'archivist' -- and it silently hid any
-    # conversation this app did not create itself. A workspace seeded by
-    # scripts/seed_demo.py had three full conversations in the graph and an
-    # empty sidebar, which is the UI disagreeing with the database about
-    # what exists.
+    # Everything a person said, whoever they were called.
+    #
+    # This filter has now been wrong twice. It began as `user == "you" and
+    # id.startswith("sess-you-")`, which hid the seeded demo conversations
+    # because their ids read `demo-day1-lift`. Dropping the id check was
+    # not enough: the Acme graph's sessions belong to `demo-user`, so the
+    # company world still showed an empty sidebar while holding seven
+    # conversations.
+    #
+    # The thing actually worth excluding is the agents' own sessions, and
+    # who those are is in the graph. Reading the roster means a new agent
+    # is excluded the moment it exists, without this list being edited.
     sessions = [s for s in store.list_sessions(limit=40)
-                if s["user"] == USER and s["turns"]]
+                if s["turns"] and (s["user"] or "").lower() not in agent_users]
 
     for sess in sessions:
         sid = sess["id"]
