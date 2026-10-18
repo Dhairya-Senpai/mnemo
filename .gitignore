@@ -1,13 +1,57 @@
+# What is in this repository: the code that runs, the prompts and world
+# files it reads, the tests, the documents the hackathon rules require,
+# and the README. Nothing else.
+
+# Working notes, not part of the project
 CLAUDE.md
 PROJECT_CONTEXT.md
+
+# Editor and tooling config. `.claude/launch.json` defines a dev server
+# for one particular editor; the project is run with `streamlit run app.py`
+# as the README says, so it belongs to the machine rather than the repo.
+.claude/
+.vscode/
+.idea/
+*.code-workspace
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
 .venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Caches this project writes
 .cache/
 
-# secrets - never commit
+# FalkorDB and Redis persistence, if anyone runs the container with a
+# volume pointed at the working directory
+dump.rdb
+*.rdb
+appendonlydir/
+
+# Streamlit per-machine state. The committed config.toml is the theme and
+# is wanted; secrets never are.
+.streamlit/secrets.toml
+
+# Logs and scratch output
+*.log
+*.out
+tmp/
+scratch/
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Secrets - never commit
 .env
 .env.*
 !.env.example
 *.key
+*.pem
 secrets.json
