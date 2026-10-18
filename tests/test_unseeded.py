@@ -330,6 +330,59 @@ def test_a_renamed_conversation_keeps_its_messages():
         "renaming must not rewrite what was said"
 
 
+# -------------------------------- episodes that outlived their facts
+@test
+def test_an_episode_is_marked_when_its_fact_is_retired():
+    """The bug this exists for: the clash that would not go away.
+
+    Retiring a fact updates the semantic tier and leaves the episodic one
+    alone -- correctly, because the conversation did happen. But the
+    episode's own words still assert the fact, so a model reading episodes
+    reported a double-booking fifteen minutes after the appointment had been
+    retired, while the fact queries beside it returned nothing.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-stale")
+    store.remember_fact(sid, "Planner", "Siddhi", "HAS_APPOINTMENT", "doctor",
+                        when="2026-10-20")
+    store.retire_open_fact(sid, "Planner", "Siddhi", "HAS_APPOINTMENT",
+                           "doctor", "cancelled", when="2026-10-20")
+
+    entity = store.recall_entity("Siddhi")
+    assert entity["facts_out"] == [], "the fact itself should be gone"
+    learned = [e for e in entity["episodes"] if "HAS_APPOINTMENT" in e["summary"]]
+    assert learned, "the episode should still be there as history"
+    assert learned[0]["superseded"] is True
+    assert "superseded" in learned[0]["summary"], \
+        "a flag alone is easy for a model to skim past; say it in the text"
+
+
+@test
+def test_an_ordinary_message_is_never_marked_superseded():
+    """An episode that established nothing has nothing to lose."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-plain")
+    store.record_event(sid, "Planner", "message", "hello there", speaker="user")
+    store.remember_fact(sid, "Planner", "Siddhi", "LIKES", "coffee")
+    store.retire_open_fact(sid, "Planner", "Siddhi", "LIKES", "coffee", "changed")
+
+    recent = {e["summary"].split("  [")[0]: e["superseded"]
+              for e in store.recall_recent(limit=20)}
+    assert recent["hello there"] is False, "a plain message was marked stale"
+    assert recent["Learned: Siddhi LIKES coffee"] is True
+
+
+@test
+def test_a_still_current_fact_is_not_marked():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-live")
+    store.remember_fact(sid, "Planner", "Siddhi", "HAS_APPOINTMENT", "dentist",
+                        when="2026-10-21")
+    episodes = store.recall_entity("Siddhi")["episodes"]
+    assert all(e["superseded"] is False for e in episodes), episodes
+    assert all("superseded" not in e["summary"] for e in episodes)
+
+
 # ------------------------------------------------------------------- report
 if __name__ == "__main__":
     try:
