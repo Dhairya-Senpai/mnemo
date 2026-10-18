@@ -61,6 +61,17 @@ def show(moment, store):
         print("    (nothing changed)")
     for line in changes.lines():
         print(f"    {line}")
+
+    # A moment whose agent could not call a tool has not run, whatever it
+    # printed. Removing a tool from the Planner left moment 4 narrating "no
+    # standing rules apply" while the runner reported all ten moments fine,
+    # because nothing here looked at whether the calls succeeded. Same shape
+    # as every silent no-op in docs/TESTING.md: the failure was visible in
+    # the output and nothing was checking.
+    broken = [s["tool"] for s in result.steps if s.get("error")]
+    if broken:
+        print(f"\n  FAILED: tool call(s) errored: {', '.join(broken)}")
+        return False
     return True
 
 

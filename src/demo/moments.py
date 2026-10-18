@@ -167,13 +167,24 @@ def m3_block_the_release(store):
 
 def m4_teach_a_rule(store):
     s1 = _session(store, "sess-rule-taught")
+    # The rule is written by the curator, not by the Planner. Splitting the
+    # jobs is the point: the model answering the person is no longer also the
+    # model deciding what to write down, which is what made rule capture
+    # unreliable in the first place (docs/TESTING.md section 3b). So the
+    # scripted adapter serves the reply first, then the curation JSON.
     planner = build_planner(store, s1, FakeAdapter([
-        calls("learn_procedure", {
-            "name": "notify-finance-lead",
-            "trigger": "a finance system is affected",
-            "action": "notify Priya Nair",
-            "applies_to_systems": ["Ledger Service"]}),
         says("Noted. I'll apply that whenever a finance system is involved."),
+        says(json.dumps({
+            "topics": ["finance notifications"],
+            "entities": ["Ledger Service"],
+            "facts": [],
+            "rules": [{
+                "name": "notify-finance-lead",
+                "trigger": "a finance system is affected",
+                "action": "notify Priya Nair",
+                "applies_to_systems": ["Ledger Service"],
+                "applies_to_projects": []}],
+        })),
     ]))
     taught = planner.run("Whenever a finance system is affected, notify Priya.")
 
