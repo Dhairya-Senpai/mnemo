@@ -10,6 +10,7 @@ PROJECT_CONTEXT.md
 # graph model and queries. The hackathon AI-use disclosure is submitted here.
 docs/*
 !docs/AI-DISCLOSURE.md
+!docs/architecture.png
 tests/
 
 # Editor and tooling config. `.claude/launch.json` defines a dev server
