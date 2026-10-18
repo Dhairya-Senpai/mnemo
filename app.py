@@ -334,6 +334,8 @@ def run_agent(build, store, session, text, speaker="user"):
     agent = build(store, session, adapter(), max_tool_calls=MAX_TOOL_CALLS)
     turn = agent.run(text, speaker=speaker)
     st.session_state.changes = diff_snapshots(before, store.snapshot())
+    st.session_state.curation_error = (
+        turn.curation.error if turn.curation else None)
     return turn
 
 
@@ -384,8 +386,17 @@ reviewer_session = current_session(store, "reviewer_session", "reviewer",
 @st.dialog("Memory changes", width="large")
 def window_changes():
     changes = st.session_state.changes
+    # A curation that failed is the one thing worth saying even when the
+    # graph is otherwise unchanged. The agent will have answered normally
+    # and may well have said "noted" -- without this the person has no way
+    # to know nothing was kept.
+    failed = st.session_state.get("curation_error")
+    if failed:
+        st.error(f"The curator did not run on the last turn, so nothing it "
+                 f"would have recorded was kept: {failed}")
     if changes is None or changes.empty:
-        st.caption("Nothing has changed yet.")
+        if not failed:
+            st.caption("Nothing has changed yet.")
         return
     cols = st.columns(3)
     for col, (label, count) in zip(cols, changes.counts.items()):

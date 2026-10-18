@@ -147,10 +147,17 @@ class Agent:
         lines = "\n".join(
             f"- {t['topic']} ({t['turns']} turn(s), last {t['last'][:10]})"
             for t in topics)
+        # Worded as reference, not as an invitation. The first version said
+        # "To continue one, call read_topic with the name exactly as written
+        # here", and a model asked for Java Fibonacci read the unrelated lift
+        # conversation and appended where it had left off on it. The index
+        # has to say the subjects exist without suggesting they be opened.
         return (
-            "\nSubjects already discussed in this workspace. To continue one, "
-            "call\nread_topic with the name exactly as written here:\n"
-            + lines + "\n")
+            "\nSubjects this person has worked on before, for reference "
+            "only:\n" + lines +
+            "\nDo not read or mention any of these unless the person asks to "
+            "return to one.\nIf they do, read_topic takes the name exactly "
+            "as written above.\n")
 
     # A rule the person taught once has to apply every time, including on the
     # turns where the model sees no reason to consult its memory. Leaving that
@@ -223,6 +230,18 @@ class Agent:
             # and the answer are about the same thing, and linking only one
             # would make half the conversation unreachable from its subject.
             curation = self._curate(user_text, text, [user_event, answer_id])
+            if curation is not None:
+                # Record whether it worked, on the answer itself. A curator
+                # that fails quietly is worse than no curator: the person is
+                # told "noted" and nothing is kept, with nothing anywhere to
+                # say so.
+                try:
+                    self.toolbox.store.record_curation(
+                        answer_id, not curation.error,
+                        curation.error or ", ".join(
+                            curation.topics + curation.facts + curation.rules))
+                except Exception:
+                    pass          # never let bookkeeping break a turn
         return Turn(text=text, steps=steps, messages=messages,
                     stopped_early=stopped_early, lookups=lookups,
                     curation=curation)

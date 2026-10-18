@@ -658,6 +658,57 @@ def test_a_broken_curator_does_not_break_the_turn():
 
 
 @test
+def test_a_failed_curation_is_recorded_on_the_answer():
+    """The curator swallows every exception by design, so that a failure
+    costs edges rather than the reply. That made it silent: the person is
+    told "noted", nothing is kept, and nothing anywhere says so -- the
+    failure docs/TESTING.md section 3b calls the dangerous one, brought
+    back by the thing built to fix it."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    turn = build_planner(store, sid, FakeAdapter([
+        says("Noted - Java from now on."),
+        says("not json"),
+        says("still not json"),
+    ])).run("from now on i want any code in java")
+
+    assert turn.text == "Noted - Java from now on."
+    failed = store.failed_curations()
+    assert len(failed) == 1, failed
+    assert failed[0]["why"], "the reason must be recorded, not just the fact"
+    assert "Noted" in failed[0]["answer"], failed[0]
+
+
+@test
+def test_a_successful_curation_is_recorded_too():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    build_planner(store, sid, FakeAdapter([
+        says("Noted."),
+        curation(topics=["java preferences"]),
+    ])).run("java please")
+    assert store.failed_curations() == []
+    assert store._read(
+        "MATCH (e:Event) WHERE e.curated = true RETURN count(e)")[0][0] == 1
+
+
+@test
+def test_the_index_does_not_invite_the_model_to_open_a_subject():
+    """The first wording said "To continue one, call read_topic...". Asked
+    for Java Fibonacci, the model read an unrelated lift conversation and
+    appended where it had left off on it."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.link_event_topics(
+        store.record_event(sid, "Planner", "message", "x", speaker="user"),
+        ["lift control logic"])
+    prompt = build_planner(store, sid,
+                           FakeAdapter([says("hi")])).system_prompt()
+    assert "unless the person asks" in prompt, prompt[-400:]
+    assert "To continue one" not in prompt
+
+
+@test
 def test_the_topic_index_is_injected_into_the_planners_prompt():
     """A model cannot ask for a conversation whose existence nothing has
     told it about. recent_conversations lists sessions by their *opening

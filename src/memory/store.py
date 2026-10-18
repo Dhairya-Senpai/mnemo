@@ -457,6 +457,41 @@ class MemoryStore:
                 linked.append(name)
         return linked
 
+    def record_curation(self, event_id, ok, detail=""):
+        """Mark on the answer whether the turn's curation succeeded.
+
+        The curator exists to make capture reliable, and until this it
+        failed *silently*: `curate_turn` swallows every exception by design,
+        the error was returned on the Turn and then dropped, and nothing was
+        written. So a turn where the agent said "noted, Java from now on"
+        and nothing was stored left no trace anywhere -- which is exactly
+        the failure docs/TESTING.md section 3b calls the dangerous one, and
+        it was reintroduced by the thing built to fix it.
+
+        Stored as properties on the answer Event rather than as a node: this
+        is a fact about a turn, not an episode of its own, and a new node
+        per turn would show up in recall and in the rendered graph.
+        """
+        self._write(
+            "MATCH (e:Event {id:$eid}) "
+            "SET e.curated = $ok, e.curation_note = $detail",
+            eid=event_id, ok=bool(ok), detail=(detail or "")[:400])
+
+    def failed_curations(self, limit=20):
+        """Turns whose curation did not run. Answers "why wasn't that kept?"
+
+        Without this the question is unanswerable after the fact -- the only
+        evidence was a log line in a process that has since restarted.
+        """
+        rows = self._read(
+            "MATCH (e:Event) WHERE e.curated = false "
+            "RETURN e.id, e.ts, e.curation_note, substring(e.summary, 0, 120) "
+            "ORDER BY e.ts DESC, e.id DESC LIMIT $limit",
+            limit=limit,
+        )
+        return [{"event": r[0], "ts": r[1], "why": r[2], "answer": r[3]}
+                for r in rows]
+
     def session_topics(self, session_id, limit=3):
         """Topics already attached to this conversation, most recent first.
 

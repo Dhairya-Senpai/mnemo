@@ -396,6 +396,79 @@ Worth noting the root cause behind that one, unfixed: `app.py` sets
 "you". Changing it would orphan facts already stored against that name in
 existing workspaces, so it stands.
 
+### 3e. "It said noted, and then forgot"
+
+**Found by:** teaching it "from now on i want any code i ask first
+preference in java", getting "Noted — from now on, any code you ask for
+will first be in Java", and then getting Python for BFS in the next chat.
+
+Two separate defects, and the investigation is the useful part.
+
+**The rule was never written.** Only `comment every line of code` was in
+force, so Python was the correct answer to an empty rule set. The capture
+failed, which is the one thing the curator exists to prevent.
+
+Re-running that exact turn through the curator afterwards extracted the
+rule correctly, four times out of four. So it was not the model, not the
+prompt and not the duplicate guard — the Java action shares no content
+words with the comment rule. What actually happened is that `curate.py` had
+been edited while the Streamlit process was up, the page was showing
+Streamlit's "File change — Rerun" banner, and the turn ran against a
+half-reloaded module.
+
+**That diagnosis took half an hour and should have taken five seconds.**
+`curate_turn` swallows every exception on purpose, so a failure costs edges
+rather than the reply. But the error was returned on the `Turn` and then
+dropped. Nothing was written, nothing was shown. A turn where the agent
+says "noted" and stores nothing left **no trace anywhere** — which is
+precisely the failure section 3b calls the dangerous one, reintroduced by
+the mechanism built to fix it.
+
+**Changed:** every curated turn now records the outcome on the answer event
+(`curated`, `curation_note`), `failed_curations()` lists the ones that did
+not run, and the Memory-changes panel says so outright. The next time this
+happens it is one query, or one glance.
+
+**And the agent volunteered an unrelated conversation.** The same turn
+asked only for Java Fibonacci, and the reply appended "We left off after
+discussing the `Map<Floor, Queue<Request>>` structure for pending floor
+requests. What would you like to work on next?". Tools called:
+`what_is_on`, `read_topic`, `read_topic`, `record_decision` — four, none
+asked for.
+
+Two causes, both mine:
+
+- **The injected index was an invitation.** It read "Subjects already
+  discussed in this workspace. To continue one, call read_topic with the
+  name exactly as written here". The model took the suggestion. It now
+  reads as reference, and says not to open one unless the person asks.
+- **The Planner's prompt described a system that no longer existed.** It
+  still told the agent to call `remember_fact` and `learn_procedure`, both
+  removed when the curator took over writing, and `get_applicable_procedures`,
+  which was never in its tool list at all. Rewritten to match its actual
+  tools and to say that standing rules arrive in its instructions.
+
+There is a feedback loop worth naming, which the first fix also closes: the
+agent's unasked-for tangent was then curated as the turn's topic, so the
+Fibonacci session became tagged `lift control logic`, and carry-forward
+would have propagated that to every later turn in it. An agent's own
+digression becoming recorded truth about what the conversation is for is
+the same family as section 3 — prose treated as evidence — and it
+compounds.
+
+**Verified after the fix**, fresh workspace, `ornith:9b`:
+
+```
+session 1  "provide in java, also from now on i want any code i ask
+            first preference in java"
+           tools: []            <- no tangent, nothing unasked-for
+           rule captured: 'Java-first code rule'
+
+session 2  (NEW CHAT) "can you provide me code for bfs ?"
+           tools: []
+           -> "Here's a BFS implementation in Java:"
+```
+
 ### What a live run confirmed
 
 Fresh workspace, three sessions, nothing carried between them but the graph:
