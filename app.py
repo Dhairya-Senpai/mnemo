@@ -718,7 +718,7 @@ with st.sidebar:
     head, plus = st.columns([4, 1], vertical_alignment="center")
     head.caption("Workspace")
     with plus.container(key="wsadd"):
-        if st.button(":material/add:", help="New workspace", type="tertiary"):
+        if st.button(":material/add:", type="tertiary"):
             window_new_workspace()
 
     pick, kebab = st.columns([5, 1], vertical_alignment="center")
