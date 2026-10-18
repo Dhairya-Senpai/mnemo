@@ -32,7 +32,12 @@ SEMANTIC = ("Decision", "Procedure", "Insight")
 OPERATIONAL = ("Task", "Ticket", "Agent")
 EPISODIC = ("Session", "Event")
 
+# `None` means no label filter: show whatever this workspace happens to hold,
+# minus the plumbing. Every other entry is an allow-list built for the company
+# world, which silently hides open-layer facts -- a personal workspace whose
+# nodes are Place, Food or Thing rendered as a single node under those.
 VIEWS = {
+    "Everything here": None,
     "World and decisions": WORLD + SEMANTIC,
     "World only": WORLD,
     "Everything except events": WORLD + SEMANTIC + OPERATIONAL,

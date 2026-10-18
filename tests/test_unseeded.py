@@ -65,6 +65,34 @@ def empty_store():
 print("using empty graph tenant_unseeded (no seed, no Agent nodes)\n")
 
 
+# --------------------------------------- a graph that does not exist at all
+@test
+def test_reads_work_before_the_graph_exists():
+    """A workspace has to be readable before anyone has written to it.
+
+    FalkorDB creates a graph's Redis key on first write; until then
+    GRAPH.RO_QUERY fails with "Invalid graph operation on empty key" rather
+    than returning no rows. The UI lists conversations before the first
+    message, so without this a brand-new workspace crashed on open.
+    """
+    store = empty_store()          # deletes the graph; nothing has written yet
+    assert store.list_sessions(limit=5) == []
+    assert store.recall_recent(limit=5) == []
+    assert store.explain_answer() is None
+    assert store.what_is_on("2026-10-20") == []
+    assert store.recall_entity("nobody") is None
+
+
+@test
+def test_the_first_write_brings_the_graph_into_being():
+    store = empty_store()
+    assert store.list_sessions() == [], "fixture should start with no graph"
+    sid = store.start_session(user="Siddhi", session_id="s-first")
+    store.record_event(sid, "Planner", "message", "hello", speaker="user")
+    assert len(store.list_sessions()) == 1
+    assert len(store.recall_recent()) == 1
+
+
 # ------------------------------------------------- bug 1: silent no-op
 @test
 def test_an_event_is_written_without_a_seeded_agent():
@@ -231,6 +259,75 @@ def test_a_fact_about_someone_else_keeps_its_own_types():
     assert priya["type"] == "Person", priya
     assert priya["facts_out"][0]["name"] == "peanuts"
     assert priya["facts_out"][0]["type"] == "Food", priya["facts_out"]
+
+
+# ----------------------------------- removing a conversation
+@test
+def test_removing_a_conversation_retires_what_it_taught():
+    """Hiding the chat alone leaves the agent acting on it.
+
+    The gap is easy to walk into: the conversation leaves the sidebar while
+    the appointment stays current, so the agent keeps refusing to book a
+    flight on account of something the person believes they deleted.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-remove")
+    store.remember_fact(sid, "Planner", "Siddhi", "HAS_APPOINTMENT", "doctor",
+                        when="2026-10-20")
+    assert store.what_is_on("2026-10-20"), "fixture should start booked"
+
+    retired = store.hide_session(sid)
+    assert retired == 1, f"expected one fact retired, got {retired}"
+    assert store.what_is_on("2026-10-20") == [], \
+        "the day is still blocked by a conversation that was removed"
+    assert sid not in [x["id"] for x in store.list_sessions()], \
+        "the conversation should be out of the list"
+
+
+@test
+def test_removing_a_conversation_is_not_a_delete():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-keep")
+    store.remember_fact(sid, "Planner", "Siddhi", "HAS_APPOINTMENT", "doctor",
+                        when="2026-10-20")
+    store.hide_session(sid)
+
+    rows = store._read("MATCH ()-[r:HAS_APPOINTMENT]->() "
+                       "RETURN r.valid_from, r.valid_to, r.retired_with_session")
+    assert len(rows) == 1, "the edge should still be there"
+    assert rows[0][1] is not None, "it should carry an end date"
+    assert rows[0][2] == sid, "and say which removal ended it"
+    # The episode itself survives, so nothing points at a missing event.
+    assert store._read("MATCH (:Session {id:$s})-[:HAS_EVENT]->(e:Event) "
+                       "RETURN count(e)", s=sid)[0][0] > 0
+
+
+@test
+def test_other_conversations_are_untouched_by_a_removal():
+    store = empty_store()
+    keep = store.start_session(user="Siddhi", session_id="s-other")
+    store.remember_fact(keep, "Planner", "Siddhi", "HAS_APPOINTMENT",
+                        "dentist", when="2026-10-21")
+    drop = store.start_session(user="Siddhi", session_id="s-drop")
+    store.remember_fact(drop, "Planner", "Siddhi", "HAS_APPOINTMENT",
+                        "doctor", when="2026-10-20")
+
+    store.hide_session(drop)
+    assert store.what_is_on("2026-10-20") == [], "removed day should be clear"
+    assert store.what_is_on("2026-10-21"), "the other conversation's fact went too"
+
+
+@test
+def test_a_renamed_conversation_keeps_its_messages():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-rename")
+    store.record_event(sid, "Planner", "message", "I have a doctor appointment",
+                       speaker="user")
+    store.rename_session(sid, "Doctor appointment")
+    row = [x for x in store.list_sessions() if x["id"] == sid][0]
+    assert row["title"] == "Doctor appointment"
+    assert row["preview"] == "I have a doctor appointment", \
+        "renaming must not rewrite what was said"
 
 
 # ------------------------------------------------------------------- report

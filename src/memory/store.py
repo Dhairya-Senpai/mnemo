@@ -28,6 +28,7 @@ import uuid
 from datetime import datetime, timezone
 
 from falkordb import FalkorDB
+from redis.exceptions import ResponseError
 
 from .schema import (
     ENTITY_LABELS,
@@ -44,6 +45,57 @@ from .schema import (
 def utc_now():
     """Second-precision ISO-8601 UTC, e.g. 2026-10-15T14:30:00Z."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def list_tenants(host="localhost", port=6379):
+    """Every workspace that exists, most recently created first.
+
+    There is no registry of workspaces anywhere in this project, and that is
+    the point: a workspace *is* a graph. Isolation is structural, so the set
+    of workspaces is simply whatever graphs the database is holding, and a
+    new one needs no registration -- it exists as soon as something is
+    written to it.
+
+    "Created" is the earliest Session in the graph. Nothing records when a
+    graph came into being -- Redis keys carry no creation time -- but the
+    first session opened against a workspace is the moment it started
+    existing, which is the same thing measured from the inside.
+    """
+    db = FalkorDB(host=host, port=port)
+    names = [n[len("tenant_"):] for n in db.list_graphs()
+             if n.startswith("tenant_")]
+
+    def born(name):
+        try:
+            rows = db.select_graph(f"tenant_{name}").ro_query(
+                "MATCH (s:Session) RETURN min(s.started_at)").result_set
+            return (rows[0][0] or "") if rows else ""
+        except Exception:
+            return ""                      # graph with no key yet, or no sessions
+
+    names.sort()                           # alphabetical within a tie
+    names.sort(key=born, reverse=True)     # stable: newest first
+    return names
+
+
+def rename_tenant(old, new, host="localhost", port=6379):
+    """Rename a workspace, moving the graph rather than copying it.
+
+    FalkorDB has no GRAPH.RENAME. It does not need one: a graph lives under a
+    single Redis key, so RENAME moves the whole thing -- nodes, edges and
+    indexes -- in one operation. Verified against FalkorDB v6.0.2.
+    """
+    db = FalkorDB(host=host, port=port)
+    if f"tenant_{new}" in db.list_graphs():
+        raise ValueError(f"a workspace named {new!r} already exists")
+    if f"tenant_{old}" not in db.list_graphs():
+        raise LookupError(f"no workspace named {old!r}")
+    db.connection.rename(f"tenant_{old}", f"tenant_{new}")
+
+
+def delete_tenant(name, host="localhost", port=6379):
+    """Drop a workspace entirely. This one really does delete."""
+    FalkorDB(host=host, port=port).select_graph(f"tenant_{name}").delete()
 
 
 class MemoryStore:
@@ -69,8 +121,27 @@ class MemoryStore:
     # ----------------------------------------------------------------- plumbing
 
     def _read(self, q, **params):
+        """Run a read-only query, treating a graph that does not exist as empty.
+
+        FalkorDB stores a graph under a Redis key that is created by the
+        first write. Until then the key does not exist, and GRAPH.RO_QUERY
+        against it fails with "Invalid graph operation on empty key" rather
+        than returning no rows.
+
+        That matters because a workspace has to be readable before it is
+        writable: the UI lists conversations before anyone has said anything,
+        so a brand-new tenant would crash on first open instead of showing an
+        empty chat. A graph with nothing in it genuinely answers "nothing",
+        so that is what this returns. Only that one error is swallowed --
+        anything else is a real failure and still raises.
+        """
         self.reads += 1
-        return self._g.ro_query(q, params=params).result_set
+        try:
+            return self._g.ro_query(q, params=params).result_set
+        except ResponseError as exc:
+            if "empty key" in str(exc).lower():
+                return []
+            raise
 
     def _write(self, q, **params):
         self.writes += 1
@@ -212,17 +283,94 @@ class MemoryStore:
                 for r in rows]
 
     def list_sessions(self, limit=25):
-        """Sessions newest first, with how much was said in each."""
+        """Sessions newest first, with how much was said and how each opened.
+
+        `preview` is the first thing actually said, which is what the UI
+        titles a conversation with -- `sess-you-1792283610` is an id, not a
+        name, and a sidebar full of ids is unreadable.
+
+        Only events carrying a `speaker` count. An agent's internal working
+        record is not part of the conversation, so it neither titles it nor
+        counts towards its length.
+
+        The ORDER BY before the collect is what makes `msgs[0]` the *first*
+        message rather than an arbitrary one: aggregation preserves the order
+        rows arrive in. Collecting every summary to use two of them is
+        wasteful on a long conversation, but it keeps this to one round trip
+        and the alternative is a second query per session.
+        """
         rows = self._read(
-            "MATCH (s:Session) "
+            "MATCH (s:Session) WHERE s.hidden IS NULL "
             "OPTIONAL MATCH (s)-[:HAS_EVENT]->(e:Event) WHERE e.speaker IS NOT NULL "
-            "WITH s, count(e) AS turns "
-            "RETURN s.id, s.started_at, s.user, turns "
+            "WITH s, e ORDER BY e.ts, e.id "
+            "WITH s, collect(e.summary) AS msgs "
+            "RETURN s.id, s.started_at, s.user, size(msgs) AS turns, msgs[0], "
+            "       s.title "
             "ORDER BY s.started_at DESC, s.id DESC LIMIT $limit",
             limit=limit,
         )
-        return [{"id": r[0], "started_at": r[1], "user": r[2], "turns": r[3]}
+        return [{"id": r[0], "started_at": r[1], "user": r[2], "turns": r[3],
+                 "preview": r[4], "title": r[5]}
                 for r in rows]
+
+    def rename_session(self, session_id, title):
+        """Give a conversation a name instead of its opening line.
+
+        Until renamed, a conversation is titled by its first message, which is
+        derived rather than stored. A title is the one thing about a session
+        a person owns, so it is the one thing they can set.
+        """
+        res = self._write(
+            "MATCH (s:Session {id:$sid}) SET s.title = $title",
+            sid=session_id, title=(title or "").strip())
+        return bool(res.properties_set)
+
+    def hide_session(self, session_id):
+        """Remove a conversation, and retire everything it taught.
+
+        Hiding the conversation alone is not enough, and the gap is easy to
+        walk into: the chat leaves the sidebar while the facts it established
+        stay current, so the agent keeps refusing to book a flight on account
+        of an appointment the user believes they just deleted. The memory and
+        the conversation are different things, and the person removing one
+        means both.
+
+        So this closes the validity window on every fact whose `source_event`
+        belongs to this session -- open-layer edges, versioned world
+        relationships, and the versioned nodes (Decision, Procedure) alike.
+
+        It is still not a delete. The facts keep their `valid_to` and remain
+        readable through fact_history, the events stay, and the reasoning
+        trace still resolves: nothing is left pointing at something that no
+        longer exists. The rule is the one that holds everywhere else here --
+        the only destructive operation is closing a validity window.
+
+        Returns how many facts were retired.
+        """
+        now = self.now()
+        edges = self._write(
+            "MATCH (:Session {id:$sid})-[:HAS_EVENT]->(e:Event) "
+            "WITH collect(e.id) AS ids "
+            "MATCH ()-[r]->() "
+            "WHERE r.source_event IN ids AND r.valid_to IS NULL "
+            "SET r.valid_to = $now, r.retired_with_session = $sid "
+            "RETURN count(r)",
+            sid=session_id, now=now)
+        nodes = self._write(
+            "MATCH (:Session {id:$sid})-[:HAS_EVENT]->(e:Event) "
+            "WITH collect(e.id) AS ids "
+            "MATCH (n) "
+            "WHERE n.source_event IN ids AND n.valid_to IS NULL "
+            "SET n.valid_to = $now, n.retired_with_session = $sid "
+            "RETURN count(n)",
+            sid=session_id, now=now)
+        self._write("MATCH (s:Session {id:$sid}) SET s.hidden = true",
+                    sid=session_id)
+        count = 0
+        for res in (edges, nodes):
+            if res.result_set:
+                count += res.result_set[0][0]
+        return count
 
     def recall_related(self, label, name, limit=20):
         """Everything the graph currently knows about one entity.

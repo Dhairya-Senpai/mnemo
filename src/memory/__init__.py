@@ -5,6 +5,8 @@ MemoryStore. See docs/SCHEMA.md for the graph model.
 """
 
 from .diff import Changes, diff_snapshots
-from .store import MemoryStore, utc_now
+from .store import (MemoryStore, delete_tenant, list_tenants, rename_tenant,
+                    utc_now)
 
-__all__ = ["MemoryStore", "utc_now", "diff_snapshots", "Changes"]
+__all__ = ["MemoryStore", "list_tenants", "rename_tenant", "delete_tenant",
+           "utc_now", "diff_snapshots", "Changes"]

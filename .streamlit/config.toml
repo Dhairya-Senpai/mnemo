@@ -1,0 +1,25 @@
+# Streamlit's stock dark theme is a cold blue-black with a saturated red
+# accent, which made a memory assistant look like a dashboard. This is a warm,
+# low-contrast palette closer to the chat apps people actually use: the accent
+# appears on one thing at a time, and nothing competes with the conversation.
+
+[theme]
+base = "dark"
+
+primaryColor = "#D97757"              # warm terracotta, used sparingly
+backgroundColor = "#262624"           # warm near-black, not blue-black
+secondaryBackgroundColor = "#1F1E1D"  # sidebar and message bubbles
+textColor = "#E8E6DC"                 # cream; pure white is harsh on warm dark
+linkColor = "#D97757"
+
+# 16px headings shouting over a conversation is most of what made the old
+# screen feel like a demo rig. Body text up slightly, headings down a lot.
+baseFontSize = 15
+headingFont = "Georgia, 'Iowan Old Style', 'Times New Roman', serif"
+headingFontSizes = ["2.0rem", "1.45rem", "1.15rem"]
+headingFontWeights = 500
+
+[server]
+# The graph canvas is loaded from a CDN inside a component iframe; nothing
+# here needs to upload.
+maxUploadSize = 5
