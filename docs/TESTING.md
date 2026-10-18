@@ -215,6 +215,52 @@ first applied to both agents. The Planner answers free-form input from a
 person and carries its rules; the Reviewer gets one fixed trigger and reads
 everything, rules included.
 
+## 3c. Resuming a long conversation in a new chat
+
+**The scenario judges actually want for Agent Memory and Coordination:** work
+through a problem across many turns, start a fresh chat, say "look at what I
+was working on and let's continue", and have the agent pick it up.
+
+**Found by:** three turns designing a Java token-bucket rate limiter, then a
+new session asking to continue.
+
+It failed completely, and returned an **empty answer**. The agent had no tool
+that could list or read a past conversation. `recall_recent` gave it a flat
+stream of fact summaries, so it probed blindly with `recall_entity` and
+`recall_related` until the budget ran out, then produced nothing at all.
+
+Worth noting what caused half of this: excluding an agent's own replies from
+`recall_recent` (section 3, attempt 3) is right for ambient recall and wrong
+for resuming work, where the replies *are* the thing being resumed.
+
+**Changed, three things:**
+
+- `recent_conversations` — the conversations in this workspace, newest
+  first, with how each one opened.
+- `read_conversation` — one past conversation in full, both sides. This is
+  the resolution of the tension above: ambient recall still leaves an
+  agent's prose out, because it is unreliable as fact, but a conversation
+  asked for by name comes back whole.
+- A turn that exhausts its budget now says so instead of returning an empty
+  bubble, which read as a crash.
+
+With those, the agent recovered the language, the data structure, the design
+decision and the open question. It called `recent_conversations`, then
+`read_conversation`, which is the intended path.
+
+**And one more structural guard.** Even with the right tools it then called
+`what_is_on` on eight different dates and spent the whole budget after it
+already had its answer. The repeat cache only catches *identical* calls, so
+a per-tool cap was added: four calls to one tool in a turn, then it is told
+to answer with what it has.
+
+**Two tests caught a real design question here.** Both suites assert that a
+model cannot name an `agent` or a `session_id`, because provenance is a
+property of the wiring. `read_conversation` names a session by design. The
+invariant was narrowed rather than dropped: it cannot write, and `tenant`
+and `agent` stay bound server-side, so the furthest it reaches is another
+conversation in a workspace the caller already had full write access to.
+
 ## 4. Still open
 
 - **A person's own words are still recalled after the fact is retired.**

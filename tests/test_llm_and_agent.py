@@ -438,9 +438,19 @@ def test_every_tool_call_gets_a_result_even_when_budget_is_gone():
 
 @test
 def test_agent_and_session_are_bound_not_model_supplied():
-    # The model never names an agent or session; the schemas do not expose them.
+    # The model never chooses who it acts as or where it writes: the schemas
+    # do not expose `agent` or `session_id`, so provenance is a property of
+    # the wiring rather than of the model's good behaviour.
+    #
+    # `read_conversation` is the one tool that names a session, and only to
+    # read one. It cannot write, and the store it reads through is bound to
+    # a single tenant's graph, so the most it can reach is another
+    # conversation in the same workspace -- which is the whole point of it.
+    reads_a_named_conversation = {"read_conversation"}
     box = Toolbox(STORE, "Planner", SESSION, allowed=PLANNER_TOOLS)
     for spec in box.specs():
+        if spec.name in reads_a_named_conversation:
+            continue
         props = set(spec.parameters["properties"])
         assert "agent" not in props and "session_id" not in props, spec.name
 

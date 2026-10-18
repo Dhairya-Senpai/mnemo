@@ -168,12 +168,21 @@ def test_schemas_carry_enums_and_mark_optionals():
 @test
 def test_agent_and_session_are_not_client_settable():
     # The whole point of binding them server-side.
+    #
+    # `read_conversation` names a session, and only to read it. The boundary
+    # that matters still holds: `tenant` is not settable, so a client cannot
+    # reach another workspace, and `agent` is not settable, so it cannot act
+    # as someone else. Within the one tenant it was handed, a client can
+    # already record decisions and retire facts -- reading a conversation
+    # there is strictly less than it could do before.
+    reads_a_named_conversation = {"read_conversation"}
     _, server = build()
     for tool in asyncio.run(server.list_tools()):
         props = set(tool.input_schema.get("properties", {}))
         assert "agent" not in props, tool.name
-        assert "session_id" not in props, tool.name
         assert "tenant" not in props, tool.name
+        if tool.name not in reads_a_named_conversation:
+            assert "session_id" not in props, tool.name
 
 
 @test

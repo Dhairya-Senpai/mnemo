@@ -270,6 +270,25 @@ def _build_catalogue() -> dict[str, Tool]:
             {"ticket_id": s.create_ticket(sid, a, title, blocks_project,
                                           cites_decision=cites_decision)})
 
+    add("recent_conversations",
+        "The conversations in this workspace, newest first, with how each "
+        "one opened and how long it ran. Use this when asked to pick up "
+        "earlier work: find the conversation first, then read it.",
+        {"limit": _INT}, [],
+        lambda s, a, sid, limit=8: [
+            {"id": c["id"], "opened_with": c["title"] or c["preview"],
+             "messages": c["turns"], "started": c["started_at"]}
+            for c in s.list_sessions(limit=limit) if c["turns"]])
+
+    add("read_conversation",
+        "Read a past conversation in full, both sides, oldest first. Pass an "
+        "id from recent_conversations. This is how you resume work: the "
+        "detail of what was said lives here, not in the fact summaries.",
+        {"session_id": _STR, "limit": _INT}, ["session_id"],
+        lambda s, a, sid, session_id, limit=40: [
+            {"who": m["speaker"], "said": m["text"][:1200]}
+            for m in s.session_transcript(session_id, limit=limit)])
+
     add("explain_answer",
         "Why an agent answered as it did earlier. Returns the reads behind a "
         "past answer, in order, and which nodes each one returned. Pass "
@@ -288,7 +307,8 @@ PLANNER_TOOLS = (
     "recall_recent", "recall_entity", "recall_related", "what_is_on",
     "current_decisions", "decision_history", "explain_path", "insight_sources",
     "remember_fact", "record_decision", "create_task", "learn_procedure",
-    "retire_fact", "explain_answer",
+    "retire_fact", "explain_answer", "recent_conversations",
+    "read_conversation",
 )
 
 REVIEWER_TOOLS = (
@@ -297,7 +317,7 @@ REVIEWER_TOOLS = (
     "dependents_of", "explain_path", "critical_projects", "insight_sources",
     "current_facts", "get_applicable_procedures", "remember_fact",
     "retire_fact", "assert_fact", "create_ticket", "complete_task",
-    "explain_answer",
+    "explain_answer", "recent_conversations", "read_conversation",
 )
 
 
@@ -324,7 +344,7 @@ _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:]{8}Z$")
 # Reads that are themselves about the trace. Recording them would make every
 # question about past reasoning add to the reasoning being questioned, and
 # each explanation would cite the last one.
-_UNTRACED = frozenset({"explain_answer"})
+_UNTRACED = frozenset({"explain_answer", "recent_conversations"})
 
 
 def citation_keys(value, _out=None) -> list[str]:

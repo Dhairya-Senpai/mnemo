@@ -28,6 +28,14 @@ PROMPT_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
 # The cap is a backstop against a loop that never converges, not a target.
 DEFAULT_MAX_TOOL_CALLS = 6
 
+# How many times one tool may be called in a single turn. The repeat cache
+# below catches identical calls; this catches the other shape of the same
+# failure, where a model walks a tool across varying arguments and never
+# stops. Asked to resume an earlier conversation, one read the conversation
+# correctly and then called what_is_on on eight different dates, spending the
+# whole budget after it already had its answer.
+MAX_CALLS_PER_TOOL = 4
+
 
 def load_prompt(name: str) -> str:
     """Prompts live in plain text files, with no provider-specific syntax."""
@@ -182,6 +190,7 @@ class Agent:
         # answer and saying so is cheaper than re-querying, and the nudge
         # pushes the model to answer instead of circling.
         seen: dict[tuple, str] = {}
+        per_tool: dict[str, int] = {}
 
         while True:
             response = self.llm.chat(messages, tools=specs,
@@ -217,7 +226,15 @@ class Agent:
                 for call in response.tool_calls:
                     key = (call.name, json.dumps(call.arguments, sort_keys=True,
                                                  default=str))
-                    if key in seen:
+                    per_tool[call.name] = per_tool.get(call.name, 0) + 1
+                    if per_tool[call.name] > MAX_CALLS_PER_TOOL:
+                        result = ToolResult(
+                            call_id=call.id, is_error=True,
+                            content=f"You have called {call.name} "
+                                    f"{MAX_CALLS_PER_TOOL} times this turn. "
+                                    f"It has told you what it can. Answer "
+                                    f"with what you already have.")
+                    elif key in seen:
                         result = ToolResult(
                             call_id=call.id,
                             content=f"You already called {call.name} with these "
@@ -259,5 +276,10 @@ class Agent:
             role="user",
             text="Do not call any more tools. Answer now, in plain prose, "
                  "using only what the tools above returned.")]
-        return self.llm.chat(closing, tools=(),
-                             system=self.system_prompt()).text
+        last = self.llm.chat(closing, tools=(), system=self.system_prompt()).text
+        # A model that spends its whole budget searching and then returns
+        # nothing leaves an empty bubble on screen, which reads as a crash.
+        # Saying so is worse than an answer and far better than silence.
+        return last or (
+            "I ran out of tool calls before I got to an answer. Ask me again, "
+            "more specifically, and I will go straight at it.")
