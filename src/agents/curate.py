@@ -33,7 +33,7 @@ from memory.schema import clean_predicate, not_entity_clause
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "curator.txt"
 
-REQUIRED_KEYS = ("topics", "entities", "facts", "rules")
+REQUIRED_KEYS = ("topics", "entities", "facts", "rules", "settles")
 
 # Bounds on what one turn may write. A model that decides every noun is a
 # fact should cost us a messy turn, not a graph full of scenery.
@@ -56,6 +56,7 @@ class Curation:
     facts: list[str] = field(default_factory=list)
     rules: list[str] = field(default_factory=list)
     linked_topics: int = 0        # rules/decisions tied to the turn's subject
+    settled: str = ""             # what this turn decided, if anything
     skipped: list[str] = field(default_factory=list)
     error: str | None = None
 
@@ -248,6 +249,19 @@ def apply_curation(store, session_id, agent, event_ids, data) -> Curation:
             out.rules.append(name)
         except Exception as exc:
             out.skipped.append(f"rule {name}: {type(exc).__name__}: {exc}")
+
+    # A settlement is marked on the *answer* -- the last event id -- because
+    # that is the turn in which the question stopped being open. Marking the
+    # person's question instead would point "what did we decide" at the
+    # asking rather than the deciding.
+    settles = data.get("settles")
+    if isinstance(settles, str) and settles.strip() and event_ids:
+        try:
+            marked = store.mark_settlement(event_ids[-1], settles,
+                                           topics or ["general"])
+            out.settled = marked["statement"]
+        except Exception as exc:
+            out.skipped.append(f"settlement: {type(exc).__name__}: {exc}")
 
     # Last, because it attaches what the clauses above just created. A
     # Procedure or Decision is born with exactly one edge -- to the Event

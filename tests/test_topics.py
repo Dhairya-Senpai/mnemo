@@ -30,6 +30,7 @@ nothing about whether a real model extracts well.
 
 import json
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -72,11 +73,17 @@ def empty_store():
     return MemoryStore(TENANT)
 
 
-def curation(topics=(), entities=(), facts=(), rules=()):
-    """A curator result as JSON text, for scripting a fake adapter."""
+def curation(topics=(), entities=(), facts=(), rules=(), settles=""):
+    """A curator result as JSON text, for scripting a fake adapter.
+
+    Every key the curator requires must be here. Omitting one does not
+    fail loudly -- `ask_json` validates, retries, and silently eats the
+    next scripted reply, so the symptom is a confusing "script exhausted"
+    three tests later.
+    """
     return says(json.dumps({
         "topics": list(topics), "entities": list(entities),
-        "facts": list(facts), "rules": list(rules),
+        "facts": list(facts), "rules": list(rules), "settles": settles,
     }))
 
 
@@ -821,6 +828,150 @@ def test_a_rule_is_tied_to_the_subject_it_was_learned_under():
         "MATCH (t:Topic {name:'array reordering'})<-[:ABOUT]-(p:Procedure) "
         "RETURN p.name")
     assert reached and reached[0][0] == "java first", reached
+
+
+# ------------------------------------------------------- what was decided
+@test
+def test_the_newest_settlement_is_the_one_that_holds():
+    """The point of marking rather than searching.
+
+    Two turns both mention a queue. A keyword search matches both equally
+    and cannot say which is current, because a sentence carries no
+    valid_to -- docs/TESTING.md section 3. Ordering marked settlements by
+    (ts, id) descending answers it exactly.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    first = store.record_event(sid, "Planner", "message",
+                               "Use a PriorityQueue ordered by floor.",
+                               speaker="Planner")
+    store.mark_settlement(first, "Pending requests use a PriorityQueue",
+                          ["lift control logic"])
+    time.sleep(1.05)                    # second-precision timestamps
+    second = store.record_event(sid, "Planner", "message",
+                                "Agreed, an ArrayDeque is simpler.",
+                                speaker="Planner")
+    store.mark_settlement(second, "Switched to an ArrayDeque",
+                          ["lift control logic"])
+
+    settled = store.settlements("lift logic")
+    assert len(settled) == 2, settled
+    assert settled[0]["settled"] == "Switched to an ArrayDeque", settled
+    assert settled[1]["settled"].endswith("PriorityQueue"), settled
+    # Flagged as well as ordered. Asked what was decided, a model read a
+    # correctly newest-first list and narrated it oldest-first; it reached
+    # the right conclusion that time, which is not the same as reliable.
+    assert settled[0]["status"] == "current", settled
+    assert settled[1]["status"] == "superseded", settled
+
+
+@test
+def test_a_settlement_needs_a_statement_and_a_real_event():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "hi", speaker="user")
+    for bad, exc in (("", ValueError), ("   ", ValueError)):
+        try:
+            store.mark_settlement(eid, bad, ["x"])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("an empty settlement must be refused")
+    try:
+        store.mark_settlement("evt-nope", "something", ["x"])
+    except LookupError:
+        return
+    raise AssertionError("a missing event must be loud, not a silent no-op")
+
+
+@test
+def test_a_removed_conversation_hides_its_settlements():
+    """Same hole as read_topic had: removing a chat must close every route
+    back into it, decisions included."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-gone")
+    eid = store.record_event(sid, "Planner", "message", "we will use Java",
+                             speaker="Planner")
+    store.mark_settlement(eid, "The project is written in Java", ["stack"])
+    assert len(store.settlements("stack")) == 1
+    store.hide_session(sid)
+    assert store.settlements("stack") == []
+
+
+@test
+def test_full_text_search_finds_a_turn_by_its_words():
+    """A real FalkorDB full-text index, not a Python scan. The DDL the
+    docs show (`db.idx.fulltext.createNodeIndex`) is rejected on v6.0.2;
+    `CREATE FULLTEXT INDEX` is what works."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.record_event(sid, "Planner", "message",
+                       "Use a PriorityQueue ordered by floor.",
+                       speaker="Planner")
+    store.record_event(sid, "Planner", "message",
+                       "Unrelated chatter about lunch.", speaker="user")
+    hits = store.search_turns("PriorityQueue")
+    assert len(hits) == 1, hits
+    assert "PriorityQueue" in hits[0]["text"]
+    # Whole words, not substrings -- verified, and the reason settlements
+    # exist rather than this being the whole answer.
+    assert store.search_turns("queue") == []
+
+
+@test
+def test_search_skips_a_removed_conversation():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s-gone")
+    store.record_event(sid, "Planner", "message", "the passphrase is hunter",
+                       speaker="user")
+    assert len(store.search_turns("hunter")) == 1
+    store.hide_session(sid)
+    assert store.search_turns("hunter") == []
+
+
+@test
+def test_the_curator_marks_what_a_turn_settled():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    asked = store.record_event(sid, "Planner", "message",
+                               "which structure?", speaker="user")
+    answered = store.record_event(sid, "Planner", "message",
+                                  "A PriorityQueue.", speaker="Planner")
+    out = apply_curation(store, sid, "Planner", [asked, answered], {
+        "topics": ["lift control logic"], "entities": [], "facts": [],
+        "rules": [],
+        "settles": "Pending floor requests use a PriorityQueue"})
+    assert out.settled == "Pending floor requests use a PriorityQueue", out
+    # Marked on the answer, not the question: that is the turn in which the
+    # question stopped being open.
+    settled = store.settlements("lift control logic")
+    assert len(settled) == 1 and settled[0]["event"] == answered, settled
+
+
+@test
+def test_most_turns_settle_nothing():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "hello",
+                             speaker="user")
+    out = apply_curation(store, sid, "Planner", [eid], {
+        "topics": [], "entities": [], "facts": [], "rules": [],
+        "settles": ""})
+    assert out.settled == "", out
+    assert store.settlements() == []
+    assert store._read("MATCH ()-[r:SETTLES]->() RETURN count(r)")[0][0] == 0
+
+
+@test
+def test_a_settlement_cannot_be_forged_as_an_open_fact():
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "x", speaker="user")
+    out = apply_curation(store, sid, "Planner", [eid], {
+        "topics": [], "entities": [], "rules": [], "settles": "",
+        "facts": [{"subject": "a", "predicate": "SETTLES", "object": "b"}]})
+    assert out.facts == [], out
+    assert any("SETTLES" in s for s in out.skipped), out.skipped
 
 
 @test

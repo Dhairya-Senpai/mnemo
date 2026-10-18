@@ -734,6 +734,70 @@ already been poked with `zoomToFit`, `applyLayout` and `setConfig` from the
 console. Measurements taken from it -- including "even twenty nodes paint
 nothing" -- were worthless. The answer came from one clean reload.
 
+## 3j. "What did we decide?" — the idea, and why the obvious version fails
+
+**Proposed by the builder:** since the conversation is stored in increasing
+order, walk it backwards — optionally filtered by keyword — to find a
+decision.
+
+The instinct is right and the ordering half was already true: ids carry a
+microsecond prefix precisely so `(ts, id)` sorts chronologically. And there
+is a real gap to fill. Formal decisions become `Decision` nodes, but the
+moments that settle a piece of work never did: the Planner only records
+work decisions, and section 3g made a preference explicitly not one.
+
+**The keyword half fails, quietly.** After one turn chooses a PriorityQueue
+and a later turn switches to an ArrayDeque, searching "queue" matches both
+and nothing marks which holds. A settlement stated in prose has no
+`valid_to` — that is section 3 again, in a fourth place.
+
+**Built instead:** the curator marks the turn. `(Event)-[:SETTLES]->(Topic)`
+with the decision on `Event.settled`, and "what did we decide" becomes an
+ordering rather than a guess. Not versioned: a later settlement supersedes
+an earlier one by being later.
+
+Keyword search was still worth having, and it turns out FalkorDB has a real
+full-text index — so it is a database query, not a Python scan. The DDL in
+the docs (`db.idx.fulltext.createNodeIndex`) is rejected on v6.0.2;
+`CREATE FULLTEXT INDEX FOR (e:Event) ON (e.summary)` works. It matches
+whole words only — `queue` does not find `PriorityQueue` — which is the
+second reason marking carries the feature rather than search.
+
+**Verified live**, `ornith:9b`, fresh workspace:
+
+```
+"what should hold the pending floor requests?"
+  settled: ''                           <- a question settles nothing
+
+"ok lets go with a PriorityQueue ordered by floor number"
+  settled: 'Pending requests are handled using a PriorityQueue ordered
+            by floor number.'
+
+"actually scrap that, an ArrayDeque is simpler"
+  settled: 'Floor request handling switched from PriorityQueue to
+            ArrayDeque'
+
+(NEW SESSION) "what are we using to hold pending floor requests?"
+  tools: ['what_was_decided']
+  -> "Pending floor requests are held in an ArrayDeque — we switched from
+      a PriorityQueue to that earlier today."
+```
+
+**One thing a single live run caught.** On the first attempt the agent
+received a correctly newest-first list and narrated it *oldest*-first. It
+still reached the right conclusion, which is exactly the kind of result
+that would have shipped a latent bug. The fix was the usual one: the tool
+now flags the newest settlement per topic as `current` and the rest as
+`superseded`, rather than relying on the reader noticing the order.
+
+**And a self-inflicted one worth recording**, because it will recur: adding
+`settles` to the curator's required keys broke three unrelated tests with
+"FakeAdapter script exhausted". A scripted reply missing a required key
+does not fail loudly — `ask_json` validates, retries, and silently
+consumes the next queued reply, so the error surfaces in a different test
+than the one at fault. The test helper now builds every required key in one
+place.
+
 ## 4. Still open
 
 - **A person's own words are still recalled after the fact is retired.**
@@ -750,6 +814,11 @@ nothing" -- were worthless. The answer came from one clean reload.
 - **The curator costs a second model call per turn.** On a local 9B model
   that latency is noticeable. It buys reliable capture, which prompting
   demonstrably did not, but it is a real trade and not a free one.
+
+- **A settlement is only as good as the curator's judgement.** It decides
+  what counts as deciding. Observed to discriminate correctly between a
+  question, an option list and a choice on a live run, but that is one run
+  on one model, not a measurement.
 
 - **Topic synonyms still fragment.** Normalising case and spacing stops
   `Lift Control Logic` and `lift control logic` splitting, and showing the

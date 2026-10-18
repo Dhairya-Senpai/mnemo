@@ -601,7 +601,70 @@ index itself, and behavioural nodes whose `name` is an internal handle — a
 `Procedure` called "comment every line" was being offered to the curator as
 an entity to mention until that was fixed.
 
-## 19. Indexes
+## 19. "What did we decide?"
+
+**What it answers:** the question a transcript is worst at.
+
+Formal decisions become `Decision` nodes. But the moments that actually
+settle a piece of work — "go with a PriorityQueue", "scrap that, use an
+ArrayDeque" — never did: the Planner only records work decisions, and a
+preference is explicitly not one. Those settlements lived in prose, and
+prose cannot be retired (TESTING.md section 3).
+
+The obvious design is a keyword search over what was said. It does not
+work, and the reason is worth stating because the failure is quiet: after
+one turn chooses a PriorityQueue and a later turn switches to an
+ArrayDeque, searching "queue" matches both and nothing says which holds.
+
+So the curator **marks** the turn instead:
+
+```cypher
+MATCH (e:Event {id: $eid}) SET e.settled = $text
+MERGE (t:Topic {name: $name})
+MERGE (e)-[:SETTLES]->(t)
+```
+
+and the question becomes an ordering, not a guess:
+
+```cypher
+MATCH (e:Event)-[:SETTLES]->(t:Topic)
+MATCH (s:Session)-[:HAS_EVENT]->(e)
+WHERE e.settled IS NOT NULL AND s.hidden IS NULL AND t.name = $topic
+RETURN e.id, e.ts, t.name, e.settled, e.speaker, s.id
+ORDER BY e.ts DESC, e.id DESC LIMIT $limit
+```
+
+No `valid_to` is needed. A later settlement supersedes an earlier one by
+being later, and `(ts, id)` is exact because ids carry a microsecond
+prefix — the same property that makes `recall_recent` ordered.
+
+**The first result is flagged `current`, not merely first.** Asked what had
+been decided, a model read a correctly newest-first list and narrated it
+oldest-first. It reached the right answer that time, which is not the same
+as being reliable, and ordering is a convention a reader can miss.
+
+## 20. Full-text search over what was said
+
+```cypher
+CALL db.idx.fulltext.queryNodes('Event', $term) YIELD node AS e
+MATCH (s:Session)-[:HAS_EVENT]->(e)
+WHERE s.hidden IS NULL AND e.speaker IS NOT NULL
+RETURN e.id, e.ts, e.speaker, e.summary, e.settled, s.id
+ORDER BY e.ts DESC, e.id DESC LIMIT $limit
+```
+
+Searching prose is the one job a transcript is genuinely better at than a
+graph, and FalkorDB has a real full-text index for it — so it is a database
+query rather than a Python scan over every row. The DDL is
+`CREATE FULLTEXT INDEX FOR (e:Event) ON (e.summary)`; the
+`db.idx.fulltext.createNodeIndex` form in the docs is rejected.
+
+Two things to know. It matches **whole words**: `queue` does not find
+`PriorityQueue`. And the parameter here is `$term`, not `$q`, because
+`MemoryStore._read`'s own first argument is named `q` and passing `q=`
+collides with it — caught by a `TypeError` on the first run.
+
+## 21. Indexes
 
 ```cypher
 CREATE INDEX FOR (n:Event) ON (n.id)

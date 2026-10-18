@@ -242,6 +242,7 @@ def test_appointment_then_flight_across_two_sessions():
                        "object": "doctor", "subject_type": "Person",
                        "object_type": "Thing", "when": "2026-10-20"}],
             "rules": [],
+            "settles": "",
         })),
     ])
     first = build_planner(store, s1, llm1).run(
@@ -254,7 +255,7 @@ def test_appointment_then_flight_across_two_sessions():
     llm2 = FakeAdapter([
         calls("what_is_on", {"date": "2026-10-20"}),
         says("You already have a doctor appointment that day."),
-        says('{"topics":[],"entities":[],"facts":[],"rules":[]}'),
+        says('{"topics":[],"entities":[],"facts":[],"rules":[],"settles":""}'),
     ])
     turn = build_planner(store, s2, llm2).run("Can I fly on the 20th?")
 

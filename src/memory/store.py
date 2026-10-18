@@ -34,6 +34,7 @@ from .schema import (
     ENTITY_LABELS,
     EVENT_KINDS,
     FACT_ENDPOINTS,
+    FULLTEXT_INDEXES,
     INDEXES,
     PROCEDURE_SCOPES,
     not_entity_clause,
@@ -193,6 +194,13 @@ class MemoryStore:
         for label, prop in INDEXES:
             try:
                 self._write(f"CREATE INDEX FOR (n:{label}) ON (n.{prop})")
+            except ResponseError as exc:
+                if "already indexed" not in str(exc).lower():
+                    raise
+        for label, prop in FULLTEXT_INDEXES:
+            try:
+                self._write(
+                    f"CREATE FULLTEXT INDEX FOR (n:{label}) ON (n.{prop})")
             except ResponseError as exc:
                 if "already indexed" not in str(exc).lower():
                     raise
@@ -544,6 +552,130 @@ class MemoryStore:
                 sid=session_id, name=name)
             made += res.relationships_created
         return made
+
+    def mark_settlement(self, event_id, statement, topics):
+        """Record that this turn settled something, and on what subject.
+
+        Why this is a marked edge rather than a keyword search over prose,
+        which is the obvious cheaper design:
+
+        A settlement stated in a sentence cannot be retired. That is the
+        whole lesson of docs/TESTING.md section 3 -- three separate
+        surfaces had to be closed one at a time because prose asserts
+        things that `valid_to` cannot reach. Search the transcript for
+        "queue" after one turn chose a PriorityQueue and a later one
+        switched to a Deque, and both match equally.
+
+        Marking makes the settlement a thing in the graph, so "what did we
+        decide" is answered by *ordering* rather than by guessing which
+        sentence is current. No `valid_to` is needed: a later settlement on
+        the same topic supersedes an earlier one simply by being later, and
+        ordering by (ts, id) is exact -- which is the same argument
+        docs/SCHEMA.md makes for `SUPERSEDES` being needed only on
+        `Decision`, where the replacement is not otherwise findable.
+        """
+        text = " ".join((statement or "").split())[:400]
+        if not text:
+            raise ValueError("a settlement needs a statement")
+        if not self._read("MATCH (e:Event {id:$eid}) RETURN e.id", eid=event_id):
+            raise LookupError(f"cannot mark a settlement: no event {event_id!r}")
+        self._write("MATCH (e:Event {id:$eid}) SET e.settled = $text",
+                    eid=event_id, text=text)
+        marked = []
+        for raw in topics or []:
+            try:
+                name = self._clean_topic(raw)
+            except ValueError:
+                continue
+            self._write(
+                "MATCH (e:Event {id:$eid}) MERGE (t:Topic {name:$name}) "
+                "MERGE (e)-[:SETTLES]->(t)",
+                eid=event_id, name=name)
+            marked.append(name)
+        return {"statement": text, "topics": marked}
+
+    def settlements(self, topic=None, limit=10):
+        """What has been settled, newest first. The current one is the first.
+
+        Ordered by (ts, id) descending, which is only exact because ids
+        carry a microsecond prefix -- several turns inside one exchange tie
+        on a second-precision timestamp. Hidden sessions are excluded, or
+        removing a conversation would leave its decisions reachable.
+        """
+        where = ["e.settled IS NOT NULL", "s.hidden IS NULL"]
+        params = {"limit": limit}
+        match = ("MATCH (e:Event)-[:SETTLES]->(t:Topic) "
+                 "MATCH (sess:Session)-[:HAS_EVENT]->(e) ")
+        if topic is not None:
+            resolved = self.resolve_topic(topic)
+            if resolved is None:
+                return []
+            where.append("t.name = $topic")
+            params["topic"] = resolved
+        rows = self._read(
+            match.replace("(sess:Session)", "(s:Session)")
+            + f"WHERE {' AND '.join(where)} "
+            + "RETURN e.id, e.ts, t.name, e.settled, e.speaker, s.id "
+              "ORDER BY e.ts DESC, e.id DESC LIMIT $limit",
+            **params,
+        )
+        # Flagged, not merely ordered. Asked what was decided, the model
+        # read a correctly newest-first list and narrated it oldest-first;
+        # it reached the right conclusion that time, which is not the same
+        # as being reliable. Order is a convention a reader can miss, and
+        # docs/TESTING.md is a list of occasions where the fix that held
+        # was the one that changed what the tool returns.
+        out, seen = [], set()
+        for r in rows:
+            topic_name = r[2]
+            out.append({"event": r[0], "ts": r[1], "topic": topic_name,
+                        "settled": r[3], "said_by": r[4], "session": r[5],
+                        "status": ("current" if topic_name not in seen
+                                   else "superseded")})
+            seen.add(topic_name)
+        return out
+
+    def search_turns(self, text, limit=10):
+        """Full-text search over what was actually said, newest first.
+
+        A real FalkorDB full-text index, not a Python scan -- see
+        FULLTEXT_INDEXES for the verified DDL. Searching prose is the one
+        job a transcript is genuinely better at than a graph, and doing it
+        through the database rather than around it is the difference
+        between using FalkorDB and decorating with it.
+
+        Both sides come back. Ambient recall leaves an agent's prose out
+        because it is unreliable as fact, but a search is asked for by
+        name, and the answer to "where did we land on this" is very often
+        in something the agent said -- the same resolution reached for
+        read_conversation and read_topic.
+
+        It matches **whole words, not substrings**, which is worth knowing
+        before relying on it: searching "queue" does not find
+        "PriorityQueue", because the tokeniser treats that as one word.
+        Verified, not assumed. This is why `settlements()` exists rather
+        than this being the whole answer -- a marked settlement is found by
+        traversal, which does not care how the thing was spelled.
+        """
+        query = " ".join((text or "").split())
+        if not query:
+            return []
+        try:
+            rows = self._read(
+                # `term`, not `q`: _read's own first parameter is named q,
+                # so passing q= as a query parameter collides with it.
+                "CALL db.idx.fulltext.queryNodes('Event', $term) YIELD node AS e "
+                "MATCH (s:Session)-[:HAS_EVENT]->(e) "
+                "WHERE s.hidden IS NULL AND e.speaker IS NOT NULL "
+                "RETURN e.id, e.ts, e.speaker, e.summary, e.settled, s.id "
+                "ORDER BY e.ts DESC, e.id DESC LIMIT $limit",
+                term=query, limit=limit)
+        except ResponseError as exc:
+            # A workspace written before the index existed, or a query the
+            # tokeniser rejects. Saying so beats pretending nothing matched.
+            raise LookupError(f"full-text search unavailable: {exc}") from exc
+        return [{"event": r[0], "ts": r[1], "speaker": r[2], "text": r[3],
+                 "settled": r[4], "session": r[5]} for r in rows]
 
     def topic_index(self, limit=12):
         """One line per subject this workspace has discussed, newest first.

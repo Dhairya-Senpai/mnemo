@@ -342,6 +342,7 @@ def test_a_rule_taught_in_one_session_fires_in_another():
                 "applies_to_systems": ["Ledger Service"],
                 "applies_to_projects": [],
             }],
+            "settles": "",
         })),
     ]))
     turn = planner.run("whenever a finance system is affected, notify Priya")

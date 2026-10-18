@@ -77,6 +77,23 @@ INDEXES = [
     ("Topic", "name"),
 ]
 
+# Full-text indexes, which take different DDL from the range indexes above.
+#
+# Verified on v6.0.2: `CREATE FULLTEXT INDEX FOR (e:Event) ON (e.summary)`
+# works and `CALL db.idx.fulltext.queryNodes('Event', <term>)` searches it.
+# The `db.idx.fulltext.createNodeIndex('Event', 'summary')` form the docs
+# show is rejected -- "Received 2 arguments, expected at most 1" -- which is
+# exactly the kind of thing this project checks rather than assumes.
+#
+# This is what keeps keyword search over what was said a *graph* query
+# rather than a Python string scan. Searching prose is the one place the
+# chat-log approach is actually the right tool, and doing it through an
+# index in FalkorDB is the difference between using the database and
+# working around it.
+FULLTEXT_INDEXES = [
+    ("Event", "summary"),
+]
+
 
 # --------------------------------------------------------------- open layer
 #
@@ -111,7 +128,7 @@ RESERVED_PREDICATES = frozenset({
     "HAS_EVENT", "PERFORMED", "ABOUT", "RECORDED_IN", "LEARNED_FROM",
     "DERIVED_FROM", "MADE", "SUPERSEDES", "CREATED", "ASSIGNED_TO",
     "CONCERNS", "FILED", "BLOCKS", "CITES", "APPLIES_TO",
-    "READ", "RETURNED", "ON_TOPIC",
+    "READ", "RETURNED", "ON_TOPIC", "SETTLES",
 }) | set(FACT_ENDPOINTS)
 
 

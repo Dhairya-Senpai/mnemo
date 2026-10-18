@@ -148,7 +148,7 @@ is all we need; test before claiming more.)*
 |---|---|---|
 | `Agent` | `name`, `role` | — |
 | `Session` | `id`, `started_at`, `user` | Episodic |
-| `Event` | `id`, `ts`, `kind`, `summary`, `speaker` | Episodic |
+| `Event` | `id`, `ts`, `kind`, `summary`, `speaker`, `settled`, `curated`, `curation_note` | Episodic |
 | `Person` | `name`, `role`, `aliases[]` | Semantic (identity) |
 | `Project` | `name` | Semantic (identity) |
 | `System` | `name` | Semantic (identity) |
@@ -292,6 +292,7 @@ attached, and retiring the decision updates the project's state for free.
 | `(Procedure)-[:LEARNED_FROM]->(Event)` | Same for rules: "you told me this on Oct 15, in session 1." |
 | `(Insight)-[:DERIVED_FROM]->(Event)` | Many-to-one: the episodes a consolidation summarised. It does double duty — it is both the provenance trail and the marker that those episodes have been absorbed, so candidate selection excludes them automatically rather than needing a flag. |
 | `(Event)-[:READ]->(Lookup)` | The reads behind one answer. The `Event` is the agent's own reply, so this edge is what makes "why did you say that" a traversal rather than a screenshot. Attached when the answer is written, so a turn that crashed before answering leaves its lookups unlinked — findable by `Lookup.session`, which is the honest outcome: the reads did happen. |
+| `(Event)-[:SETTLES]->(Topic)` | The turn in which a question about this subject stopped being open, with the decision itself on `Event.settled`. **Not versioned, deliberately**: a later settlement on the same topic supersedes an earlier one by being later, and `ORDER BY (ts, id) DESC` is exact. That is the same argument this file already makes for `SUPERSEDES` existing only on `Decision`, where the replacement is not otherwise findable. |
 | `(Event)-[:ON_TOPIC]->(Topic)` | What a turn was about, so a past conversation is findable by **subject** rather than by its opening line. `recent_conversations` titles a session with its first message, which for a long design discussion is the least representative sentence in it — the decisions are in turns 7 to 9. Not versioned: the episodic tier is immutable. |
 | `(Lookup)-[:RETURNED]->(any)` | Which nodes a read surfaced. Resolved against the graph at write time rather than taken on trust, so a citation exists only if a node really bears that key — the trace cannot claim a fact the graph does not hold. |
 | `(Insight)-[:ABOUT]->(Person\|Project\|System)` | What a consolidation is about, so `recall_related` can lead with it. Shares the `ABOUT` type with events deliberately: "what is this node concerned with" is the same question either way. |
@@ -558,6 +559,13 @@ Two details, both verified rather than assumed:
 - **Nodes**: `Event.id`, `Event.ts`, `Session.id`, `Task.id`, `Task.status`,
   `Ticket.id`, `Person.name`, `Project.name`, `System.name`, `Decision.id`,
   `Procedure.id`, `Insight.id`, `Lookup.id`, `Topic.name`
+- **Full text**: `Event.summary`. Created with
+  `CREATE FULLTEXT INDEX FOR (e:Event) ON (e.summary)` and queried with
+  `CALL db.idx.fulltext.queryNodes('Event', $term)`. The
+  `db.idx.fulltext.createNodeIndex('Event', 'summary')` form the docs show
+  is **rejected** on v6.0.2 — "Received 2 arguments, expected at most 1".
+  It matches whole words, not substrings: searching `queue` does not find
+  `PriorityQueue`. Verified, not assumed.
 - **Relationships**: none yet. The syntax is verified to work (T4a), but with
   `IS NULL` unable to use an index (T4b) and a graph this small, there is nothing
   to gain. Add one only when a query measurably needs it.

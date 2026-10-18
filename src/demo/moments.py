@@ -184,6 +184,7 @@ def m4_teach_a_rule(store):
                 "action": "notify Priya Nair",
                 "applies_to_systems": ["Ledger Service"],
                 "applies_to_projects": []}],
+            "settles": "",
         })),
     ]))
     taught = planner.run("Whenever a finance system is affected, notify Priya.")

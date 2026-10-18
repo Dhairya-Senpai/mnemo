@@ -298,6 +298,25 @@ def _build_catalogue() -> dict[str, Tool]:
         {"topic": _STR, "limit": _INT}, ["topic"],
         lambda s, a, sid, topic, limit=60: s.read_topic(topic, limit=limit))
 
+    add("what_was_decided",
+        "What has been settled, newest first, so the first result is what "
+        "holds now. Pass a subject to narrow it, or omit it for everything "
+        "recently decided. Use this for \"what did we decide about X\", "
+        "\"what did we go with\", \"what was the final approach\" -- it is "
+        "the decisions themselves, not the conversation around them.",
+        {"topic": _STR, "limit": _INT}, [],
+        lambda s, a, sid, topic=None, limit=8:
+            s.settlements(topic=topic, limit=limit))
+
+    add("search_conversation",
+        "Find turns by the words in them, newest first. Use it when you "
+        "need something specific that was said and do not know which "
+        "conversation it was in. Matches whole words, not parts of words, "
+        "so search 'PriorityQueue', not 'queue'. Prefer what_was_decided "
+        "when the question is what was settled rather than what was said.",
+        {"text": _STR, "limit": _INT}, ["text"],
+        lambda s, a, sid, text, limit=8: s.search_turns(text, limit=limit))
+
     add("explain_answer",
         "Why an agent answered as it did earlier. Returns the reads behind a "
         "past answer, in order, and which nodes each one returned. Pass "
@@ -328,7 +347,8 @@ PLANNER_TOOLS = (
     "current_decisions", "decision_history", "explain_path", "insight_sources",
     "record_decision", "create_task",
     "retire_fact", "explain_answer", "recent_conversations",
-    "read_conversation", "read_topic",
+    "read_conversation", "read_topic", "what_was_decided",
+    "search_conversation",
 )
 
 REVIEWER_TOOLS = (
@@ -338,7 +358,7 @@ REVIEWER_TOOLS = (
     "current_facts", "get_applicable_procedures", "remember_fact",
     "retire_fact", "assert_fact", "create_ticket", "complete_task",
     "explain_answer", "recent_conversations", "read_conversation",
-    "read_topic",
+    "read_topic", "what_was_decided", "search_conversation",
 )
 
 

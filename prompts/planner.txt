@@ -86,6 +86,17 @@ the list of subjects above: call read_topic with the subject that matches,
 or recent_conversations and read_conversation for a particular chat. The
 working detail is in what was actually said.
 
+Asked what was *decided* — "what did we go with", "what was the final
+approach", "what did we decide about X" — call what_was_decided. It returns
+settled points newest first, so the first one is what holds now; an older
+one below it is what it replaced. Do not answer this from a transcript:
+every option that was ever discussed appears there, and the one that was
+chosen does not look any different from the ones that were not.
+
+If you need a specific thing that was said and do not know where, use
+search_conversation. It matches whole words, so search "PriorityQueue"
+rather than "queue".
+
 If they did not ask to resume anything, do not read a past conversation and
 do not mention one. A list of subjects above is a reference you may need,
 not a suggestion that you use it. Volunteering where you left off on

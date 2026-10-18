@@ -11,10 +11,12 @@ Return a single JSON object and nothing else, with exactly these four keys:
                 "object": "...", "subject_type": "Person",
                 "object_type": "Thing", "when": "2026-10-20"}],
   "rules":    [{"name": "...", "trigger": "...", "action": "...",
-                "applies_to_systems": [], "applies_to_projects": []}]
+                "applies_to_systems": [], "applies_to_projects": []}],
+  "settles":  "one sentence saying what this turn decided, or \"\""
 }
 
-Every key must be present. Use an empty list when there is nothing to add.
+Every key must be present. Use an empty list, or an empty string for
+"settles", when there is nothing to add.
 
 TOPICS name the subject of the work, the way a person would title it: "lift
 control logic", "rate limiter design", "travel to Berlin". Two to four words.
@@ -43,6 +45,18 @@ Scope a rule only when the person named a particular system or project it is
 about -- "notify Priya when a finance system is affected" scopes to that
 system. A rule with no scope holds everywhere, which is the normal case for
 a preference about how you work. Both scope lists may be empty.
+
+SETTLES is for a turn where a question stopped being open: a choice was
+made, an approach agreed, a value fixed. "Use a PriorityQueue ordered by
+floor number" settles something. "Here are three options" does not, and
+neither does a question, an explanation or a first draft nobody has
+accepted. Write it as a short statement of what was decided, in the
+person's terms -- not "we discussed data structures" but "pending floor
+requests are held in a PriorityQueue".
+
+Most turns settle nothing. An empty string is the normal answer, and a
+turn wrongly marked as a decision is worse than one missed, because later
+questions about what was decided will find it first.
 
 Attribute a fact about the person to them by name, never to the assistant.
 Record nothing that was not actually said.
