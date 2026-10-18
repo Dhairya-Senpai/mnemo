@@ -87,7 +87,7 @@ Being specific about this matters more than looking finished.
 
 **Verified by running it:**
 
-- All 133 tests pass against FalkorDB graph module v6.0.2.
+- All 146 tests pass against FalkorDB graph module v6.0.2.
 - Every FalkorDB behaviour claimed in `SCHEMA.md` and `QUERIES.md` was probed
   directly; the probes are reproducible.
 - The concurrency numbers were measured during an actual run, with query
@@ -130,6 +130,7 @@ python tests/test_step6.py
 python tests/test_mcp_and_algorithm.py
 python tests/test_open_facts.py
 python tests/test_trace.py
+python tests/test_unseeded.py
 python scripts/demo_isolation.py
 python scripts/demo_concurrency.py
 ```

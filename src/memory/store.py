@@ -121,14 +121,27 @@ class MemoryStore:
         if kind not in EVENT_KINDS:
             raise ValueError(f"unknown event kind {kind!r}; expected one of {EVENT_KINDS}")
         eid = self._new_id("evt")
-        self._write(
-            "MATCH (s:Session {id:$sid}), (a:Agent {name:$agent}) "
+        # MERGE, not MATCH, on the Agent. With MATCH, a graph whose Agent
+        # nodes were never seeded yields no rows, so the CREATE silently
+        # does not run: no Event, no history, and no error -- the whole
+        # episodic tier quietly becomes a no-op while facts keep being
+        # written. An agent is identified by its name alone, so creating
+        # one on first use is correct rather than merely convenient.
+        res = self._write(
+            "MATCH (s:Session {id:$sid}) "
+            "MERGE (a:Agent {name:$agent}) "
             "CREATE (e:Event {id:$eid, ts:$ts, kind:$kind, summary:$summary}) "
             "CREATE (s)-[:HAS_EVENT]->(e) "
             "CREATE (a)-[:PERFORMED]->(e)",
             sid=session_id, agent=agent, eid=eid,
             ts=ts or self.now(), kind=kind, summary=summary,
         )
+        # A missing Session still writes nothing, and that has to be loud:
+        # handing back an id for an event that does not exist is how a
+        # caller ends up with source_event pointing at nothing.
+        if res.relationships_created != 2:
+            raise LookupError(
+                f"could not record event: session {session_id!r} not found")
         if speaker:
             self._write("MATCH (e:Event {id:$eid}) SET e.speaker = $speaker",
                         eid=eid, speaker=speaker)
@@ -532,18 +545,36 @@ class MemoryStore:
             "source_event": eid,
         }
 
-    def retire_open_fact(self, session_id, agent, subject, predicate, obj, reason):
-        """Close an open-layer fact. Nothing is deleted, as everywhere else."""
+    def retire_open_fact(self, session_id, agent, subject, predicate, obj,
+                         reason, when=None):
+        """Close an open-layer fact. Nothing is deleted, as everywhere else.
+
+        `when` picks out a single instance. Without it, every open edge of
+        this predicate between these two nodes is closed -- right for a
+        fact that holds once ("X reports to Y"), wrong for one that
+        recurs. Two appointments with the same doctor on different dates
+        are both legitimately true, and a rescheduling that records the
+        new date before retiring the old one would otherwise close both
+        and lose the fact entirely.
+
+        Returns the number of edges closed. More than one, where one was
+        meant, is the signature of exactly that bug.
+        """
         rel = check_open_predicate(predicate)
         eid = self.record_event(
             session_id, agent, "correction",
-            f"Retired: {subject} {predicate} {obj} ({reason})")
+            f"Retired: {subject} {predicate} {obj}"
+            + (f" (on {when})" if when else "") + f" ({reason})")
+        where = ["s.name = $subject", "o.name = $obj", "r.valid_to IS NULL"]
+        params = {"subject": subject, "obj": obj}
+        if when:
+            where.append("r.when = $when")
+            params["when"] = when
         res = self._write(
-            f"MATCH (s)-[r:{rel}]->(o) "
-            f"WHERE s.name = $subject AND o.name = $obj AND r.valid_to IS NULL "
+            f"MATCH (s)-[r:{rel}]->(o) WHERE {' AND '.join(where)} "
             f"SET r.valid_to = $now, r.retired_by = $eid "
             f"RETURN count(r)",
-            subject=subject, obj=obj, now=self.now(), eid=eid)
+            now=self.now(), eid=eid, **params)
         return res.result_set[0][0] if res.result_set else 0
 
     def recall_entity(self, name, limit=25):
@@ -558,13 +589,20 @@ class MemoryStore:
         if not found:
             return None
 
+        # `valid_from IS NOT NULL` is what makes these return facts rather
+        # than plumbing. Only versioned edges carry it, so structural ones
+        # -- ABOUT, PERFORMED, and the RETURNED edges of the reasoning
+        # trace -- drop out. Without it, every lookup an agent has ever
+        # made comes back as something it believes about the entity.
         out = self._read(
-            "MATCH (n {name:$name})-[r]->(m) WHERE r.valid_to IS NULL "
+            "MATCH (n {name:$name})-[r]->(m) "
+            "WHERE r.valid_to IS NULL AND r.valid_from IS NOT NULL "
             "RETURN type(r), labels(m)[0], coalesce(m.name, m.title, m.id), "
             "       r.when, r.valid_from LIMIT $limit",
             name=name, limit=limit)
         inc = self._read(
-            "MATCH (m)-[r]->(n {name:$name}) WHERE r.valid_to IS NULL "
+            "MATCH (m)-[r]->(n {name:$name}) "
+            "WHERE r.valid_to IS NULL AND r.valid_from IS NOT NULL "
             "RETURN type(r), labels(m)[0], coalesce(m.name, m.title, m.id), "
             "       r.when, r.valid_from LIMIT $limit",
             name=name, limit=limit)

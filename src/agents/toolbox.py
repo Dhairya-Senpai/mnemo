@@ -15,6 +15,7 @@ surface means fewer tokens and fewer wrong turns.
 """
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -177,18 +178,24 @@ def _build_catalogue() -> dict[str, Tool]:
 
     # One retire tool, not two: the model should not have to know whether a
     # relationship belongs to the built-in set or was invented at write time.
-    def _retire(s, a, sid, rel_type, from_name, to_name, reason):
+    def _retire(s, a, sid, rel_type, from_name, to_name, reason, when=None):
         if rel_type.upper() in FACT_ENDPOINTS:
             n = s.retire_fact(sid, a, rel_type.upper(), from_name, to_name, reason)
         else:
-            n = s.retire_open_fact(sid, a, from_name, rel_type, to_name, reason)
+            n = s.retire_open_fact(sid, a, from_name, rel_type, to_name,
+                                   reason, when=when)
         return {"retired": n}
 
     add("retire_fact",
         "Close a fact that is no longer true. Works for any relationship, "
         "built-in or one you invented. Nothing is deleted; the old version "
-        "stays readable with an end date.",
-        {"rel_type": _STR, "from_name": _STR, "to_name": _STR, "reason": _STR},
+        "stays readable with an end date. If the same thing can be true "
+        "more than once (two appointments with one doctor on different "
+        "dates), pass 'when' with the date of the one you are ending, or "
+        "every matching fact is closed. When replacing a fact, retire the "
+        "old one BEFORE recording the new one.",
+        {"rel_type": _STR, "from_name": _STR, "to_name": _STR,
+         "reason": _STR, "when": _STR},
         ["rel_type", "from_name", "to_name", "reason"],
         _retire)
 
@@ -295,10 +302,21 @@ REVIEWER_TOOLS = (
 # tool's arguments and its result, then resolved against the graph by
 # MemoryStore.record_lookup -- a citation survives only if a node really bears
 # that key, so this list being generous costs nothing but a failed match.
-_ID_KEYS = frozenset({"name", "id", "project", "from", "to"})
+#
+# `subject` and `object` are here because what_is_on names its endpoints that
+# way. Leaving them out made the one tool the date-clash demo turns on cite
+# nothing, so its trace read "returned nothing" while the agent was visibly
+# answering from what it returned -- a trace that lies is worse than no trace.
+_ID_KEYS = frozenset({"name", "id", "project", "from", "to",
+                      "subject", "object"})
 
 # Keys holding a bare list of names rather than dicts (explain_path's chain).
 _LIST_KEYS = frozenset({"chain"})
+
+# `from` and `to` mean entity names in current_facts and validity timestamps
+# in decision_history. Nothing is named after an instant, so a timestamp can
+# never match a node -- but it would still consume one of the citation slots.
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:]{8}Z$")
 
 # Reads that are themselves about the trace. Recording them would make every
 # question about past reasoning add to the reasoning being questioned, and
@@ -317,7 +335,8 @@ def citation_keys(value, _out=None) -> list[str]:
     if isinstance(value, dict):
         for key, inner in value.items():
             if key in _ID_KEYS and isinstance(inner, str):
-                out.append(inner)
+                if not _TIMESTAMP.match(inner):
+                    out.append(inner)
             elif key in _LIST_KEYS and isinstance(inner, list):
                 out.extend(x for x in inner if isinstance(x, str))
             else:

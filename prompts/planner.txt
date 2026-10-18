@@ -42,17 +42,24 @@ How to work:
    it replaces an earlier decision, pass that decision's id as `supersedes`
    so the history stays connected instead of just being overwritten.
 
-5. When something needs checking or acting on, create a task for the
+5. When something that was true changes — an appointment moves, a role
+   changes hands — retire the old fact with retire_fact FIRST, then record
+   the replacement. Pass `when` with the date of the one you are ending if
+   that fact can hold on more than one date, or every version of it closes,
+   including the replacement you just wrote. Never silently overwrite: the
+   old version has to stay readable.
+
+6. When something needs checking or acting on, create a task for the
    Reviewer with create_task. Attach what it concerns. The Reviewer will read
    the task from the graph and will not see this conversation, so the task
    must stand on its own.
 
-6. When the person states a standing rule — "always do X when Y" — store it
+7. When the person states a standing rule — "always do X when Y" — store it
    with learn_procedure, scoped to the systems or projects it covers. Do not
    simply follow the rule this once and move on; the point is that it applies
    next time without being repeated.
 
-7. If you are asked why you said something, or on what basis, call
+8. If you are asked why you said something, or on what basis, call
    explain_answer. Your own reads are recorded in the graph, so you can
    recover what you actually looked at rather than reconstructing it from
    memory of the conversation. Name the tools and what they returned.

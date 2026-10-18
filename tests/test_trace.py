@@ -95,6 +95,29 @@ def test_citation_keys_ignores_values_that_are_not_identifiers():
                           "summary": "Spring Launch"}) == []
 
 
+@test
+def test_citation_keys_reads_what_is_on_results():
+    """The date lookup names its endpoints subject/object, not name.
+
+    Missing these made the one tool the date-clash demo turns on cite
+    nothing, so the UI reported "returned nothing" while the agent was
+    plainly answering from what it returned.
+    """
+    found = citation_keys([{"subject": "Siddhi", "predicate": "HAS_APPOINTMENT",
+                            "object": "doctor", "when": "2026-10-20"}])
+    assert found == ["Siddhi", "doctor"], found
+
+
+@test
+def test_citation_keys_skips_timestamps():
+    """`from`/`to` are entity names in current_facts, instants elsewhere."""
+    assert citation_keys({"id": "dec-1", "from": "2026-10-18T00:15:09Z",
+                          "to": "2026-10-19T00:15:09Z"}) == ["dec-1"]
+    # a plain date is not a timestamp, and `when` is not an identity key
+    assert citation_keys({"from": "Dana Ruiz", "to": "Ledger Migration"}) == \
+        ["Dana Ruiz", "Ledger Migration"]
+
+
 # ---------------------------------------------------------- writing a trace
 @test
 def test_a_read_records_a_lookup_citing_real_nodes():
