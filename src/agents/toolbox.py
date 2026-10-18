@@ -209,16 +209,22 @@ def _build_catalogue() -> dict[str, Tool]:
             {"event_id": s.assert_fact(sid, a, rel_type, from_name, to_name)})
 
     add("create_task",
-        "Hand work to another agent. The task carries its own context, so the "
-        "other agent reads it from the graph instead of being told.",
-        {"assigned_to": _STR, "title": _STR,
+        "Hand work to the Reviewer, a second agent. The task carries its own "
+        "context, so the Reviewer reads what it is about from the graph "
+        "instead of being told — it never sees this conversation. Always "
+        "attach what it concerns: a subject with concerns_topic (use a name "
+        "from the subjects listed in your instructions), or a project or "
+        "decision where those exist. A task with nothing attached is a bare "
+        "sentence and the handoff is lost.",
+        {"assigned_to": _STR, "title": _STR, "concerns_topic": _STR,
          "concerns_decision": _STR, "concerns_project": _STR},
         ["assigned_to", "title"],
         lambda s, a, sid, assigned_to, title, concerns_decision=None,
-               concerns_project=None:
+               concerns_project=None, concerns_topic=None:
             {"task_id": s.create_task(sid, a, assigned_to, title,
                                       concerns_decision=concerns_decision,
-                                      concerns_project=concerns_project)})
+                                      concerns_project=concerns_project,
+                                      concerns_topic=concerns_topic)})
 
     add("claim_task",
         "Atomically claim the oldest open task assigned to you. Returns null "

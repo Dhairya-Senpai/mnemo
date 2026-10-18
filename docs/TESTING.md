@@ -798,6 +798,85 @@ consumes the next queued reply, so the error surfaces in a different test
 than the one at fault. The test helper now builds every required key in one
 place.
 
+## 3k. One agent, counted
+
+**Found by:** looking at the rendered graph and saying "planner is our 1
+agent" — the brief asks for state shared *between* agents, and the picture
+showed one.
+
+Counted across every workspace:
+
+```
+lifttest   agents=['Planner']              tasks=0  tickets=0  reviewer_utterances=0
+siddhi     agents=['Planner']              tasks=0  tickets=0  reviewer_utterances=0
+work       agents=['Planner']              tasks=0  tickets=0  reviewer_utterances=0
+personal   agents=['Planner']              tasks=0  tickets=0  reviewer_utterances=0
+acme       agents=['Planner','Reviewer']   tasks=1  tickets=1  reviewer_utterances=4
+```
+
+**In every workspace actually used, there was one agent.** The two-agent
+story existed only in the seeded company graph — a scripted terminal demo,
+not the product.
+
+It was not a plumbing gap. The Reviewer has a modal in the app with an
+open-task list and a button; the Planner has `create_task`; the Reviewer
+has every tool it needs. What was missing was a **job**: both prompts said
+"in a small engineering organisation", and the Reviewer's role was to block
+a release and file a ticket. Nothing in a coding or personal conversation
+ever triggers that, so no task was ever filed, so the button stayed
+disabled.
+
+### And underneath it, bug 2.1 for the third time
+
+Giving the Reviewer a job exposed a deadlock that would have stopped it
+anyway. `create_task` matched on both `Agent` nodes:
+
+```cypher
+MATCH (creator:Agent {name:$agent}), (assignee:Agent {name:$assignee})
+CREATE (t:Task ...)
+```
+
+In a workspace built by conversation there is no `Agent {name:'Reviewer'}`
+until the Reviewer runs. The MATCH found nothing, the CREATE silently did
+not run, and the method **returned an id for a task that did not exist**.
+No task was waiting because the Reviewer had never run; the Reviewer never
+ran because no task was waiting.
+
+Same silent no-op as section 2.1, in a third place, and the same fix:
+`MERGE` the agents, and raise when nothing was written.
+
+`CONCERNS` had the matching flaw — it accepted only `Decision` and
+`Project`, both absent from a personal workspace, so a task could carry
+nothing but its own title. That is the `PROCEDURE_SCOPES` trap from 3b
+again: a closed list written for the seeded world. It now accepts a
+`Topic`, and `get_task_context` returns what has already been settled on
+that subject, so the Reviewer's first read already holds the thing it was
+asked to check against.
+
+**Verified live**, `ornith:9b`, fresh workspace, two sessions:
+
+```
+Planner  "can you get the reviewer to check the lift design
+          against my standing rules?"
+         tools: ['read_topic', 'create_task']
+         -> task filed, concerning Topic 'lift controller design'
+
+Reviewer (separate session, told only the fixed trigger sentence)
+         tools: ['claim_task', 'get_task_context',
+                 'get_applicable_procedures', 'what_was_decided',
+                 'read_topic', 'complete_task']
+         -> "The lift controller design is consistent with the standing
+             rules - no conflict found."
+
+find_prompt_leaks(['lift control logic', 'ArrayDeque',
+                   'Java code preference', 'Siddhi', 'lift controller'])
+         -> []
+```
+
+Six tools, every one a graph read, and nothing about the work reached it in
+prose. The graph afterwards holds two `Agent` nodes, one `Task` marked
+`done`, and a `CONCERNS` edge to the subject.
+
 ## 4. Still open
 
 - **A person's own words are still recalled after the fact is retired.**

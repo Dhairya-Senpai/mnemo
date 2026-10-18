@@ -1766,16 +1766,41 @@ class MemoryStore:
     # -------------------------------------------------------------- coordination
 
     def create_task(self, session_id, agent, assigned_to, title,
-                    concerns_decision=None, concerns_project=None):
+                    concerns_decision=None, concerns_project=None,
+                    concerns_topic=None):
         """Hand work to another agent. The task IS the message.
 
         CONCERNS carries the context, so the claiming agent reads what the task
         is about from the graph rather than receiving a prompt.
+
+        `concerns_topic` exists because the first two only reach the company
+        world. A workspace built by conversation has no `Project` and no
+        `Decision` node, so a task could carry nothing but its own title and
+        `get_task_context` returned `decision: None, project: None` -- the
+        claiming agent would have work it could not find the subject of, and
+        the handoff would quietly degrade into a bare sentence.
+
+        That is the same trap as `PROCEDURE_SCOPES` permitting only Project
+        and System (docs/TESTING.md 3b) and `ENTITY_LABELS` for ABOUT: a
+        closed list written for the seeded world, silently excluding the one
+        people actually use.
         """
         eid = self.record_event(session_id, agent, "handoff", f"Created task: {title}")
         tid = self._new_id("task")
-        self._write(
-            "MATCH (creator:Agent {name:$agent}), (assignee:Agent {name:$assignee}) "
+        # MERGE both agents, not MATCH. This was bug 2.1 again, still here
+        # and this time deadlocking the whole handoff: in a workspace built
+        # by conversation there is no `Agent {name:'Reviewer'}` node until
+        # the Reviewer runs, so the MATCH found nothing, the CREATE silently
+        # did not run, and this method returned an id for a task that did
+        # not exist. The Reviewer never ran because no task was waiting;
+        # no task was waiting because the Reviewer had never run.
+        #
+        # An agent is identified by its name alone, so bringing one into
+        # being when work is first assigned to it is correct rather than
+        # merely convenient.
+        res = self._write(
+            "MERGE (creator:Agent {name:$agent}) "
+            "MERGE (assignee:Agent {name:$assignee}) "
             "CREATE (t:Task {id:$tid, title:$title, status:'open', "
             "                created_at:$now, source_event:$eid}) "
             "CREATE (creator)-[:CREATED]->(t) "
@@ -1783,6 +1808,9 @@ class MemoryStore:
             agent=agent, assignee=assigned_to, tid=tid, title=title,
             now=self.now(), eid=eid,
         )
+        if res.relationships_created != 2:
+            raise LookupError(
+                f"could not create task {title!r}: nothing was written")
         if concerns_decision:
             self._write(
                 "MATCH (t:Task {id:$tid}), (d:Decision {id:$did}) "
@@ -1794,6 +1822,17 @@ class MemoryStore:
                 "MATCH (t:Task {id:$tid}), (p:Project {name:$project}) "
                 "CREATE (t)-[:CONCERNS]->(p)",
                 tid=tid, project=concerns_project,
+            )
+        if concerns_topic:
+            # MERGE, not MATCH: the Planner may hand off a subject the
+            # curator has not written yet, and a task pointing at nothing is
+            # the failure this argument exists to prevent.
+            self._write(
+                "MATCH (t:Task {id:$tid}) MERGE (tp:Topic {name:$topic}) "
+                "ON CREATE SET tp.first_seen = $now "
+                "MERGE (t)-[:CONCERNS]->(tp)",
+                tid=tid, topic=self._clean_topic(concerns_topic),
+                now=self.now(),
             )
         return tid
 
@@ -1822,25 +1861,43 @@ class MemoryStore:
         return res.result_set[0][0] if res.result_set else None
 
     def get_task_context(self, task_id):
-        """What a claimed task is about, read entirely from the graph."""
+        """What a claimed task is about, read entirely from the graph.
+
+        This is the whole handoff. The claiming agent is told one fixed
+        sentence naming nothing, so everything it acts on comes from here
+        and from what it reads next.
+
+        A topic-scoped task also returns what has already been settled on
+        that subject. Without it the Reviewer gets a subject and has to
+        guess the route in; with it the first read already contains the
+        thing it was asked to check against.
+        """
         rows = self._read(
             "MATCH (t:Task {id:$tid}) "
             "OPTIONAL MATCH (t)-[:CONCERNS]->(d:Decision) "
             "OPTIONAL MATCH (t)-[:CONCERNS]->(p:Project) "
+            "OPTIONAL MATCH (t)-[:CONCERNS]->(tp:Topic) "
             "OPTIONAL MATCH (creator:Agent)-[:CREATED]->(t) "
             "RETURN t.id, t.title, t.status, t.created_at, "
-            "       d.id, d.title, d.reason, p.name, creator.name",
+            "       d.id, d.title, d.reason, p.name, creator.name, tp.name",
             tid=task_id,
         )
         if not rows:
             return None
         r = rows[0]
-        return {
+        out = {
             "id": r[0], "title": r[1], "status": r[2], "created_at": r[3],
             "decision": {"id": r[4], "title": r[5], "reason": r[6]} if r[4] else None,
             "project": r[7],
             "created_by": r[8],
+            "topic": r[9],
         }
+        if r[9]:
+            out["settled_so_far"] = [
+                {"settled": x["settled"], "status": x["status"]}
+                for x in self.settlements(topic=r[9], limit=5)
+            ]
+        return out
 
     def complete_task(self, session_id, agent, task_id, result):
         """Close a claimed task and leave the outcome in the episodic record."""

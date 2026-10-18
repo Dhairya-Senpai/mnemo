@@ -324,7 +324,7 @@ pattern with an open `valid_to`, so a supersession edge would be redundant.
 |---|---|
 | `(Agent)-[:CREATED]->(Task)` | Who asked. |
 | `(Task)-[:ASSIGNED_TO]->(Agent)` | Who must act. Split from `CREATED` so the two are separately queryable. |
-| `(Task)-[:CONCERNS]->(Decision\|Project)` | **The literal replacement for message-passing.** The claiming agent reads what the task is about from the graph, not from a prompt. |
+| `(Task)-[:CONCERNS]->(Decision\|Project\|Topic)` | **The literal replacement for message-passing.** The claiming agent reads what the task is about from the graph, not from a prompt. |
 | `(Agent)-[:FILED]->(Ticket)` | Attribution for the action. |
 | `(Ticket)-[:BLOCKS]->(Project)` | The action's effect on the world. |
 | `(Ticket)-[:CITES]->(Decision)` | Without it the ticket is an orphan assertion. With it the demo renders the full chain: ticket → decision → event → session → agent. |

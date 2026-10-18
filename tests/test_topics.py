@@ -36,10 +36,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from agents import build_planner  # noqa: E402
+from agents import (  # noqa: E402
+    REVIEWER_TRIGGER,
+    build_planner,
+    build_reviewer,
+    find_prompt_leaks,
+)  # noqa: E402
 from agents.curate import apply_curation, build_prompt, known_context  # noqa: E402
 from agents.toolbox import PLANNER_TOOLS  # noqa: E402
-from llm.fake import FakeAdapter, calls, says  # noqa: E402
+from llm.fake import (  # noqa: E402
+    FakeAdapter,
+    calls,
+    last_tool_result,
+    says,
+)
 from memory import MemoryStore  # noqa: E402
 
 from falkordb import FalkorDB  # noqa: E402
@@ -1073,6 +1083,98 @@ def test_resuming_work_in_a_new_session_through_the_topic():
     said = " ".join(t["text"] for t in read["turns"])
     assert "state machine per car" in said, read["turns"]
     assert "what about the doors" in said, read["turns"]
+
+
+# --------------------------------------------- the handoff, unseeded
+@test
+def test_a_task_can_be_created_before_the_reviewer_has_ever_run():
+    """The deadlock. `create_task` matched on both Agent nodes, and in a
+    workspace built by conversation there is no Reviewer node until the
+    Reviewer runs -- so the CREATE silently did not run and the method
+    returned an id for a task that did not exist. No task was waiting
+    because the Reviewer had never run; the Reviewer never ran because no
+    task was waiting. Bug 2.1, a third time."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    agents = store._read("MATCH (a:Agent) RETURN a.name")
+    assert agents == [], f"fixture should have no agents yet: {agents}"
+
+    tid = store.create_task(sid, "Planner", "Reviewer", "review the design",
+                            concerns_topic="lift control logic")
+    assert store.claim_task("Reviewer") == tid, "the task must really exist"
+
+
+@test
+def test_a_task_can_concern_a_subject_not_just_a_project():
+    """CONCERNS accepted only Decision and Project -- both absent from a
+    personal workspace, so a task would carry nothing but its title and the
+    claiming agent would have no way in."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "use an ArrayDeque",
+                             speaker="Planner")
+    store.mark_settlement(eid, "Pending requests use an ArrayDeque",
+                          ["lift control logic"])
+    tid = store.create_task(sid, "Planner", "Reviewer", "review it",
+                            concerns_topic="Lift Control Logic")
+    store.claim_task("Reviewer")
+    ctx = store.get_task_context(tid)
+    assert ctx["topic"] == "lift control logic", ctx
+    # The context carries what is already settled, so the Reviewer's first
+    # read already contains the thing it was asked to check against.
+    assert ctx["settled_so_far"][0]["settled"].endswith("ArrayDeque"), ctx
+    assert ctx["settled_so_far"][0]["status"] == "current", ctx
+
+
+@test
+def test_the_reviewer_works_from_the_graph_in_a_personal_workspace():
+    """The coordination half of Track 02, in the world the product became.
+
+    Until now the two-agent handoff only existed in the seeded company
+    graph: counted across five real workspaces, every one had a single
+    Agent node, zero tasks and zero Reviewer utterances.
+    """
+    store = empty_store()
+    s1 = store.start_session(user="Siddhi", session_id="s1")
+    said = store.record_event(s1, "Planner", "message",
+                              "we will use an ArrayDeque", speaker="Planner")
+    store.mark_settlement(said, "Pending requests use an ArrayDeque",
+                          ["lift control logic"])
+    store.learn_procedure(s1, "Planner", "java first", "writing code",
+                          "write Java first")
+
+    planner = build_planner(store, s1, FakeAdapter([
+        calls("create_task", {"assigned_to": "Reviewer",
+                              "title": "review the lift design",
+                              "concerns_topic": "lift control logic"}),
+        says("I've asked the Reviewer to look at it."),
+        curation(),
+    ]))
+    planner.run("review the lift design against my standing rules")
+
+    # A different session. The Reviewer is told one fixed sentence.
+    s2 = store.start_session(user="reviewer", session_id="s2")
+    reviewer = build_reviewer(store, s2, FakeAdapter([
+        calls("claim_task", {}),
+        lambda m, t, s: calls("get_task_context",
+                              {"task_id": json.loads(last_tool_result(m))["task_id"]}),
+        calls("get_applicable_procedures", {}),
+        says("The lift design settles on an ArrayDeque; your Java-first "
+             "rule applies to any code for it."),
+    ]))
+    turn = reviewer.run(REVIEWER_TRIGGER)
+
+    ctx = json.loads(turn.steps[1].result)
+    assert ctx["topic"] == "lift control logic", ctx
+    assert ctx["settled_so_far"], "the settlement must reach the Reviewer"
+    rules = json.loads(turn.steps[2].result)
+    assert rules and rules[0]["name"] == "java first", rules
+
+    # Nothing about the work was passed to it in prose.
+    leaks = find_prompt_leaks(reviewer, turn,
+                              ["lift control logic", "ArrayDeque",
+                               "java first", "Siddhi"])
+    assert leaks == [], f"the Reviewer was told the work outright: {leaks}"
 
 
 print()
