@@ -672,6 +672,68 @@ The runner now fails a moment whose agent could not call a tool. Same shape
 as every other silent no-op in this file: the failure was visible and nothing
 looked.
 
+## 3i. No view could draw the thing we had just built
+
+**Found by:** "why don't we show this graph on our site? it's directly from
+FalkorDB", with a screenshot of FalkorDB Browser showing 105 nodes and 231
+edges of `tenant_lifttest`.
+
+Two parts to the answer, and the second was a real defect.
+
+**We already use their renderer.** `@falkordb/canvas@0.3.3` is the same
+force-directed component FalkorDB Browser draws with. The Browser *page*
+cannot be embedded -- `X-Frame-Options: DENY` and
+`frame-ancestors 'none'`, two independent blocks -- but the component is
+published standalone and we have been using it since 18 Oct.
+
+**But no view could show the conversation.** The view allow-lists are
+tuples of closed-schema labels:
+
+```python
+WORLD = ("Person", "Project", "System")
+SEMANTIC = ("Decision", "Procedure", "Insight")
+OPERATIONAL = ("Task", "Ticket", "Agent")
+EPISODIC = ("Session", "Event")
+```
+
+`Topic` is in none of them, so every allow-list view silently excluded it.
+The one view that *would* show a Topic uses an exclude-list -- and that one
+excludes `Event`. **So there was no view in the app that could draw a
+conversation joined to its subjects**, which is the entire point of the
+layer added the same day. The Browser looked richer because it was showing
+something our app could not draw at all.
+
+The same trap applies to every open-layer label: an `Appointment` or a
+`Language` is in no tuple either, so an allow-list view cannot show those
+either. Worth knowing before adding another view.
+
+**Changed:** a `Conversation and subjects` view (`Topic`, `Event`,
+`Session`), an `Everything` view that filters nothing at all, `Topic` given
+its own colour instead of falling through to the default grey, and a legend
+of labels and relationship types counted from the payload -- a force layout
+without a key is a hairball, with one it is a diagram. The legend is built
+from what is on screen rather than from the schema, so it cannot name a
+type the picture does not contain.
+
+**And a rendering bug underneath it.** With the conversation layer visible
+the canvas went black. The host page fitted the graph and then clamped the
+zoom up to a floor of 1.15, which exists so captions stay legible on the
+thirty-node seeded world. On a seventy-node graph the fit lands far below
+that, so clamping back up pushed every node outside the viewport and the
+component's culling drew nothing. `chargeStrength: -900`, tuned on the same
+small world, made the spread worse.
+
+Both now scale with the graph: repulsion eases towards -250 as nodes grow,
+and the zoom floor is only applied when the fit is already near it. Below
+that the graph is too large for legible captions anyway, and seeing its
+shape is worth more than reading it.
+
+A note on how long that took to find, because it is a reusable lesson:
+much of the diagnosis was done against a component instance that had
+already been poked with `zoomToFit`, `applyLayout` and `setConfig` from the
+console. Measurements taken from it -- including "even twenty nodes paint
+nothing" -- were worthless. The answer came from one clean reload.
+
 ## 4. Still open
 
 - **A person's own words are still recalled after the fact is retired.**

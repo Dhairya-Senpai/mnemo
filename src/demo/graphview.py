@@ -31,17 +31,32 @@ WORLD = ("Person", "Project", "System")
 SEMANTIC = ("Decision", "Procedure", "Insight")
 OPERATIONAL = ("Task", "Ticket", "Agent")
 EPISODIC = ("Session", "Event")
+# What a turn was about, and the turns themselves. Separate from EPISODIC
+# because a Topic is not an episode -- it is the subject episodes hang off,
+# and it is the only one of these worth looking at on its own.
+CONVERSATION = ("Topic", "Event", "Session")
 
 # `None` means no label filter: show whatever this workspace happens to hold,
 # minus the plumbing. Every other entry is an allow-list built for the company
 # world, which silently hides open-layer facts -- a personal workspace whose
 # nodes are Place, Food or Thing rendered as a single node under those.
+# `None` means no allow-list: show whatever this workspace holds, minus the
+# plumbing. `ALL` means exclude nothing at all.
+#
+# Every allow-list here is a tuple of *closed-schema* labels, which is a trap
+# worth naming: an open-layer node (Appointment, Language, Thing) and a Topic
+# are in none of them, so an allow-list view silently cannot show them.
+# `Topic` was missing from all five of these, which meant no view in the app
+# could draw a conversation joined to its subjects -- the one thing the
+# conversation layer exists to make visible.
+ALL = "*"
+
 VIEWS = {
-    "Everything here": None,
+    "What this workspace knows": None,
+    "Conversation and subjects": CONVERSATION,
     "World and decisions": WORLD + SEMANTIC,
     "World only": WORLD,
-    "Everything except events": WORLD + SEMANTIC + OPERATIONAL,
-    "Everything": WORLD + SEMANTIC + OPERATIONAL + EPISODIC,
+    "Everything": ALL,
 }
 
 

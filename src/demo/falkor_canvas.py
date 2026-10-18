@@ -41,6 +41,11 @@ NODE_COLOR = {
     "Agent": "#38bdf8",
     "Session": "#64748b",
     "Event": "#64748b",
+    # The hub of the conversation layer, and the thing a viewer should find
+    # first. It was falling through to DEFAULT_COLOR, which put the most
+    # important node in the picture in the same grey as everything unknown.
+    "Topic": "#e879f9",
+    "Lookup": "#334155",
 }
 DEFAULT_COLOR = "#cbd5e1"
 
@@ -62,7 +67,13 @@ def graph_payload(store, labels, cited=(), changed=(), max_nodes=120):
     # works for a workspace built by conversation rather than seeded from the
     # company world: its nodes carry labels the agent invented. The plumbing
     # is still excluded -- an Event or a Lookup is not a thing you know.
-    if labels is None:
+    if labels == "*":
+        # Exclude nothing. The only view that shows the graph as FalkorDB
+        # Browser shows it, which is the honest comparison to be able to
+        # make: same component, same data, no filter.
+        node_where = "true"
+        edge_where = "true"
+    elif labels is None:
         node_where = ("NOT n:Event AND NOT n:Session AND NOT n:Lookup "
                       "AND NOT n:Agent")
         edge_where = ("NOT a:Event AND NOT a:Session AND NOT a:Lookup "
@@ -134,6 +145,35 @@ def graph_payload(store, labels, cited=(), changed=(), max_nodes=120):
     return {"nodes": nodes, "links": links}
 
 
+def legend(payload):
+    """The labels and relationship types actually present, with their colours.
+
+    FalkorDB Browser shows these down the side and it is most of why its
+    view reads so much faster than a bare force layout -- a hairball with a
+    key is a diagram, a hairball without one is a hairball.
+
+    Counted from the payload rather than from the schema, so it describes
+    what is on screen. A legend listing types the graph does not hold would
+    be the same kind of lie as a reasoning trace that cites a tool it never
+    called.
+    """
+    labels, rels = {}, {}
+    for node in payload["nodes"]:
+        name = node["labels"][0]
+        entry = labels.setdefault(
+            name, {"label": name, "count": 0,
+                   "color": NODE_COLOR.get(name, DEFAULT_COLOR)})
+        entry["count"] += 1
+    for link in payload["links"]:
+        name = link["relationship"]
+        entry = rels.setdefault(
+            name, {"label": name, "count": 0, "color": link["color"]})
+        entry["count"] += 1
+    by_count = lambda d: sorted(d.values(), key=lambda e: (-e["count"],
+                                                          e["label"]))
+    return {"labels": by_count(labels), "relationships": by_count(rels)}
+
+
 def canvas_html(payload, height=460, background="#0e1117",
                 foreground="#e6e6e6", zoom_floor=1.0):
     """A self-contained page hosting the component, for st.components.v1.html.
@@ -142,6 +182,12 @@ def canvas_html(payload, height=460, background="#0e1117",
     component HTML from memory into a sandboxed iframe.
     """
     data = json.dumps(payload)
+    # -900 is right for the thirty-node seeded world and far too much for a
+    # conversation graph several times that size. Eased towards -200 as the
+    # node count grows, with a floor so a large graph does not collapse into
+    # an unreadable knot either.
+    count = max(len(payload["nodes"]), 1)
+    charge = -900 if count <= 30 else max(-900 * 30 // count, -250)
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
   html, body {{ margin:0; padding:0; background:{background}; overflow:hidden; }}
@@ -170,7 +216,11 @@ def canvas_html(payload, height=460, background="#0e1117",
       // Captions fill the node, and nodes are sized up in graph_payload, so
       // names stay legible at a zoom that fits the whole graph.
       nodeStyle: {{ textFillRatio: 0.8 }},
-      simulation: {{ chargeStrength: -900 }},
+      // Repulsion is scaled down as the graph grows. -900 was tuned on the
+      // seeded company world of about thirty nodes; left fixed, a seventy
+      // node conversation spreads so far that the fit lands at a zoom the
+      // clamp below then undoes, and the canvas renders empty.
+      simulation: {{ chargeStrength: {charge} }},
     }});
     el.setData(DATA);
     // The force simulation needs to settle before a fit means anything.
@@ -184,7 +234,16 @@ def canvas_html(payload, height=460, background="#0e1117",
         el.zoomToFit(1.0);
         setTimeout(() => {{
           try {{
-            if (el.getZoom() < {zoom_floor}) el.zoom({zoom_floor});
+            // Only nudge up to the floor when the fit is already near it.
+            // Clamping unconditionally is what blanked the canvas: on a
+            // large graph the fit is far below the floor, so zooming back
+            // to the floor pushed every node outside the viewport. Below
+            // that the graph is too big for legible captions anyway, and
+            // seeing its shape is worth more than reading it.
+            const z = el.getZoom();
+            if (z < {zoom_floor} && z > {zoom_floor} * 0.45) {{
+              el.zoom({zoom_floor});
+            }}
             // Without this the zoom is stored but the canvas never
             // repaints, so the captions stay missing at any zoom level.
             if (el.refresh) el.refresh();

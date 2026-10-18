@@ -37,7 +37,11 @@ from agents import (  # noqa: E402
     build_reviewer,
 )
 from demo import BY_KEY, MOMENTS, reset_world  # noqa: E402
-from demo.falkor_canvas import canvas_html, graph_payload  # noqa: E402
+from demo.falkor_canvas import (  # noqa: E402
+    canvas_html,
+    graph_payload,
+    legend as graph_legend,
+)
 from demo.graphview import VIEWS, WORLD  # noqa: E402
 from llm import get_adapter  # noqa: E402
 from memory import (MemoryStore, delete_tenant, diff_snapshots,
@@ -442,13 +446,43 @@ def window_why():
         c.partition(":")[2] for step in trace["steps"] for c in step["returned"]]
 
 
+def _draw_legend(key):
+    """Colour key for what is on screen, the way FalkorDB Browser shows one.
+
+    A force layout without a key is a hairball; with one it is a diagram.
+    Built from the payload, so it can only name labels and relationships
+    the picture actually contains.
+    """
+    def chips(entries):
+        return " ".join(
+            f"<span style='display:inline-block;margin:0 .35rem .35rem 0;"
+            f"padding:.1rem .5rem;border-radius:999px;font-size:.75rem;"
+            f"background:{e['color']}22;border:1px solid {e['color']};"
+            f"color:inherit'>"
+            f"<span style='display:inline-block;width:.5rem;height:.5rem;"
+            f"border-radius:50%;background:{e['color']};"
+            f"margin-right:.35rem'></span>{e['label']} {e['count']}</span>"
+            for e in entries)
+
+    left, right = st.columns(2)
+    with left:
+        st.caption("Labels")
+        st.markdown(chips(key["labels"]) or "—", unsafe_allow_html=True)
+    with right:
+        st.caption("Relationships")
+        st.markdown(chips(key["relationships"]) or "—",
+                    unsafe_allow_html=True)
+
+
 @st.dialog("The graph", width="large")
 def window_graph():
     view = st.selectbox("View", list(VIEWS), index=0,
                         label_visibility="collapsed",
-                        help="\"Everything here\" shows whatever this "
-                             "workspace holds; the others are allow-lists "
-                             "built for the company world.")
+                        help="\"Conversation and subjects\" is the one that "
+                             "shows what was said joined to what it was "
+                             "about. \"Everything\" filters nothing at all, "
+                             "which is the same picture FalkorDB Browser "
+                             "draws from the same component.")
     changes = st.session_state.changes
     changed = [n["name"] for n in changes.added_nodes] if changes else []
     try:
@@ -457,6 +491,7 @@ def window_graph():
                                 changed=changed)
         components.html(canvas_html(payload, height=520, zoom_floor=1.15),
                         height=530, scrolling=False)
+        _draw_legend(graph_legend(payload))
         st.caption(f"{len(payload['nodes'])} nodes · {len(payload['links'])} "
                    f"relationships · rendered by FalkorDB's own "
                    f"`@falkordb/canvas`. Outlined: what the last answer read. "
