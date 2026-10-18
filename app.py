@@ -753,9 +753,17 @@ if st.session_state.get("removing"):
     window_remove_chat(st.session_state.pop("removing"))
 
 # ---------------------------------------------------------------------- chat
+# The composer is read FIRST, even though Streamlit pins it to the foot of the
+# window wherever it is called. Reading it last meant the message the person
+# had just sent did not exist yet while the transcript was being drawn, so
+# they watched a spinner on an unchanged page for the ten or twenty seconds
+# the model took, with no sign their message had landed. Reading it here lets
+# the turn be echoed the moment it is sent, which is what every chat app does.
+prompt = st.chat_input("Message the Planner")
+
 transcript = store.session_transcript(planner_session)
 
-if not transcript:
+if not transcript and not prompt:
     # The opening screen is the composer and one line, as in any chat app.
     # Full width rather than a centre column, so the greeting stays on one
     # line, and dropped down the page so it sits above the composer rather
@@ -779,6 +787,34 @@ else:
             with st.chat_message(role):
                 st.markdown(entry["text"])
 
+        if prompt:
+            # The new turn, drawn before the model is called. Streamlit paints
+            # as the script runs, so both of these are on screen while the
+            # agent works below -- the message sent, and an answer coming.
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            with st.chat_message("assistant"):
+                with st.spinner("reading the graph…"):
+                    try:
+                        turn = run_agent(build_planner, store,
+                                         planner_session, prompt)
+                        st.session_state.planner_steps = [
+                            {"tool": s.name, "result": s.result}
+                            for s in turn.steps]
+                    except Exception as exc:
+                        # Record the failure in the conversation where
+                        # possible, but never let logging an error raise a
+                        # second one on top of it: that buries the cause.
+                        try:
+                            store.record_event(
+                                planner_session, "Planner", "message",
+                                f"(failed: {type(exc).__name__}: {exc})",
+                                speaker="Planner")
+                        except Exception:
+                            st.error(f"{type(exc).__name__}: {exc}")
+            # Reread from the graph, so what is on screen is what was stored.
+            st.rerun()
+
         # The action row, under the last answer, where copy and retry live in
         # every other chat app. This is the whole difference between this and
         # every other chat app, so it sits exactly there.
@@ -800,31 +836,6 @@ else:
                 help=f"{len(st.session_state.planner_steps)} tool call(s) and "
                      f"what each returned"):
             window_tools()
-
-# --------------------------------------------------------------- the composer
-# Streamlit pins st.chat_input to the foot of the window wherever in the
-# script it is called, so the model picker is rendered at the very end
-# instead -- that is what puts it under the composer rather than adrift in
-# the middle of the page.
-prompt = st.chat_input("Message the Planner")
-
-if prompt:
-    with st.spinner("thinking, and writing to the graph..."):
-        try:
-            turn = run_agent(build_planner, store, planner_session, prompt)
-            st.session_state.planner_steps = [
-                {"tool": s.name, "result": s.result} for s in turn.steps]
-        except Exception as exc:
-            # Record the failure in the conversation where possible, but
-            # never let the logging of an error raise a second one on top
-            # of it -- that buries the original cause.
-            try:
-                store.record_event(planner_session, "Planner", "message",
-                                   f"(failed: {type(exc).__name__}: {exc})",
-                                   speaker="Planner")
-            except Exception:
-                st.error(f"{type(exc).__name__}: {exc}")
-    st.rerun()
 
 # ---------------------------------------------------- underneath the composer
 with st.container(key="modelbar"):
