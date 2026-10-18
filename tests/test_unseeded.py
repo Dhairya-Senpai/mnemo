@@ -98,6 +98,10 @@ def test_the_first_write_brings_the_graph_into_being():
 def test_an_event_is_written_without_a_seeded_agent():
     store = empty_store()
     sid = store.start_session(user="Siddhi", session_id="s-ev")
+    # `ensure_agents` seeds the roster on first write, which would hide the
+    # bug this test exists for. Strip it back to the state the bug needs:
+    # an event recorded by an agent that has no node.
+    store._write("MATCH (a:Agent) DETACH DELETE a")
     assert store._read("MATCH (a:Agent) RETURN count(a)")[0][0] == 0, \
         "fixture must start with no Agent nodes"
 
@@ -510,8 +514,11 @@ def test_a_delete_sweeps_entities_nothing_points_at():
     store.remember_fact(sid, "Planner", "Siddhi", "HAS_APPOINTMENT", "doctor",
                         when="2026-10-20")
     store.delete_session(sid)
+    # Agent and Capability are the roster: infrastructure seeded into every
+    # workspace, not anything this conversation created.
     left = [r[0] for r in store._read(
-        "MATCH (n) WHERE NOT n:Agent RETURN coalesce(n.name, n.id)")]
+        "MATCH (n) WHERE NOT n:Agent AND NOT n:Capability "
+        "RETURN coalesce(n.name, n.id)")]
     assert left == [], f"orphaned entities were left behind: {left}"
 
 

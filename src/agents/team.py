@@ -19,10 +19,18 @@ learned it from the graph. A Reviewer that was *given* "Spring Launch" is not.
 from dataclasses import dataclass, field
 
 from .loop import Agent, Turn, load_prompt
-from .toolbox import PLANNER_TOOLS, REVIEWER_TOOLS, Toolbox
+from .toolbox import (
+    ARCHIVIST_TOOLS,
+    CODER_TOOLS,
+    PLANNER_TOOLS,
+    REVIEWER_TOOLS,
+    Toolbox,
+)
 
 PLANNER = "Planner"
 REVIEWER = "Reviewer"
+CODER = "Coder"
+ARCHIVIST = "Archivist"
 
 # The only thing the Reviewer is ever told. Static, and deliberately empty of
 # specifics: if this sentence ever grows a project name, the handoff stops
@@ -31,6 +39,29 @@ REVIEWER_TRIGGER = (
     "Check whether any work has been assigned to you. If there is, claim it, "
     "read what it concerns, and act on it. If nothing is assigned to you, say so."
 )
+
+# Every worker agent gets the same sentence. That it is the *same* one is
+# the point: nothing in it is tailored to the job, so whatever an agent
+# knows about the work it read from the graph.
+AGENT_TRIGGER = REVIEWER_TRIGGER
+
+# name -> builder, so a caller can run whichever agent the roster named
+# without a chain of ifs. The roster lives in the graph; this maps a name
+# to the code that can actually run it.
+BUILDERS = {}
+
+
+def build_agent(name, store, session_id, llm, **kwargs) -> Agent:
+    """Build the agent the roster named, or fail loudly.
+
+    A name in the graph with no builder here is an agent that can be
+    assigned work and never does it -- so this raises rather than quietly
+    returning something that looks right.
+    """
+    if name not in BUILDERS:
+        raise LookupError(
+            f"no builder for agent {name!r}; known: {sorted(BUILDERS)}")
+    return BUILDERS[name](store, session_id, llm, **kwargs)
 
 
 def build_planner(store, session_id, llm, prompt=None, curator=None,
@@ -42,6 +73,9 @@ def build_planner(store, session_id, llm, prompt=None, curator=None,
     # Same argument for the topic index: a model cannot ask to continue a
     # conversation whose existence nothing has told it about.
     kwargs.setdefault("topic_index", True)
+    # And who it can hand work to, read from the graph rather than named in
+    # the prompt -- so a new agent needs no code change here.
+    kwargs.setdefault("roster", True)
     # `curator` defaults to the Planner's own adapter, so curation is on
     # unless a caller deliberately passes curator=False. Tests that drive a
     # scripted fake adapter do exactly that -- a fake with no curation script
@@ -62,6 +96,41 @@ def build_reviewer(store, session_id, llm, prompt=None, **kwargs) -> Agent:
         toolbox=Toolbox(store, REVIEWER, session_id, allowed=REVIEWER_TOOLS),
         llm=llm,
         prompt=prompt if prompt is not None else load_prompt("reviewer"),
+        **kwargs,
+    )
+
+
+def build_coder(store, session_id, llm, prompt=None, **kwargs) -> Agent:
+    """Writes code from the settled design, never from the conversation.
+
+    Deliberately gets no standing-rules injection and no roster. It has to
+    look its rules up itself with get_applicable_procedures, for the same
+    reason the Reviewer does: an injected rule is a rule it was *told*, and
+    `find_prompt_leaks` would rightly count it. The claim that the code
+    matches what was agreed is only worth something if the agreement was
+    read rather than handed over.
+    """
+    return Agent(
+        name=CODER,
+        toolbox=Toolbox(store, CODER, session_id, allowed=CODER_TOOLS),
+        llm=llm,
+        prompt=prompt if prompt is not None else load_prompt("coder"),
+        **kwargs,
+    )
+
+
+def build_archivist(store, session_id, llm, prompt=None, **kwargs) -> Agent:
+    """Turns repeated episodes into one lasting insight.
+
+    Same reasoning on injection as the other two. It also gets no curator:
+    an agent whose whole job is writing a summary of the past should not
+    also have a second pass writing facts about its own output.
+    """
+    return Agent(
+        name=ARCHIVIST,
+        toolbox=Toolbox(store, ARCHIVIST, session_id, allowed=ARCHIVIST_TOOLS),
+        llm=llm,
+        prompt=prompt if prompt is not None else load_prompt("archivist"),
         **kwargs,
     )
 
@@ -140,3 +209,11 @@ def run_handoff(store, user_message, planner_llm, reviewer_llm,
         task_id=opened[0] if opened else None,
         leaks=find_prompt_leaks(reviewer, reviewer_turn, leak_needles),
     )
+
+
+BUILDERS.update({
+    PLANNER: build_planner,
+    REVIEWER: build_reviewer,
+    CODER: build_coder,
+    ARCHIVIST: build_archivist,
+})

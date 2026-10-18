@@ -38,6 +38,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from agents import (  # noqa: E402
     REVIEWER_TRIGGER,
+    build_archivist,
+    build_coder,
     build_planner,
     build_reviewer,
     find_prompt_leaks,
@@ -1087,17 +1089,20 @@ def test_resuming_work_in_a_new_session_through_the_topic():
 
 # --------------------------------------------- the handoff, unseeded
 @test
-def test_a_task_can_be_created_before_the_reviewer_has_ever_run():
-    """The deadlock. `create_task` matched on both Agent nodes, and in a
-    workspace built by conversation there is no Reviewer node until the
-    Reviewer runs -- so the CREATE silently did not run and the method
-    returned an id for a task that did not exist. No task was waiting
-    because the Reviewer had never run; the Reviewer never ran because no
-    task was waiting. Bug 2.1, a third time."""
+def test_a_task_can_be_created_for_an_agent_that_has_never_run():
+    """The deadlock. `create_task` matched on both Agent nodes, so handing
+    work to an agent with no node silently did nothing -- the CREATE never
+    ran and the method still returned an id for a task that did not exist.
+    No task was waiting because the agent had never run; the agent never
+    ran because no task was waiting. Bug 2.1, a third time.
+
+    `ensure_agents` now seeds the roster, which hides this for the four
+    known agents. It is still reachable for any name outside the roster,
+    so the fixture removes one to exercise the real path."""
     store = empty_store()
     sid = store.start_session(user="Siddhi", session_id="s1")
-    agents = store._read("MATCH (a:Agent) RETURN a.name")
-    assert agents == [], f"fixture should have no agents yet: {agents}"
+    store._write("MATCH (a:Agent {name:'Reviewer'}) DETACH DELETE a")
+    assert store._read("MATCH (a:Agent {name:'Reviewer'}) RETURN a.name") == [],         "fixture should have removed the Reviewer"
 
     tid = store.create_task(sid, "Planner", "Reviewer", "review the design",
                             concerns_topic="lift control logic")
@@ -1175,6 +1180,110 @@ def test_the_reviewer_works_from_the_graph_in_a_personal_workspace():
                               ["lift control logic", "ArrayDeque",
                                "java first", "Siddhi"])
     assert leaks == [], f"the Reviewer was told the work outright: {leaks}"
+
+
+# ------------------------------------------------- routing by capability
+@test
+def test_the_roster_is_read_from_the_graph():
+    """Routing used to be a constant -- the Planner knew the word
+    "Reviewer" because its prompt said so. Now the list it sees is the
+    list the graph holds."""
+    store = empty_store()
+    store.start_session(user="Siddhi", session_id="s1")
+    names = {a["agent"] for a in store.agent_roster()}
+    assert {"Reviewer", "Coder", "Archivist"} <= names, names
+    assert "Planner" not in names, "an agent is not offered itself"
+
+
+@test
+def test_an_agent_written_by_hand_is_routed_to():
+    """Adding an agent should be writing a node, not editing a prompt."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store._write("MERGE (a:Agent {name:'Translator'}) "
+                 "SET a.role = 'Translates things' "
+                 "MERGE (c:Capability {name:'review'}) "
+                 "MERGE (a)-[:HANDLES]->(c)")
+    prompt = build_planner(store, sid,
+                           FakeAdapter([says("hi")])).system_prompt()
+    assert "Translator" in prompt, prompt[-500:]
+    assert "Translates things" in prompt
+
+
+@test
+def test_an_agent_with_no_capability_is_not_offered():
+    """It could be addressed by name but nothing can be routed to it, so
+    offering it as a destination would strand the work."""
+    store = empty_store()
+    store.start_session(user="Siddhi", session_id="s1")
+    store._write("MERGE (:Agent {name:'Ghost'}) ")
+    assert "Ghost" not in {a["agent"] for a in store.agent_roster()}
+
+
+@test
+def test_an_agent_claims_work_matching_what_it_can_do():
+    """The difference between coordination and point-to-point messaging:
+    a task says what it needs, and whichever agent handles that takes it."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    review = store.create_task(sid, "Planner", "Reviewer", "check it",
+                               concerns_topic="lift", needs="review")
+    code = store.create_task(sid, "Planner", "Coder", "build it",
+                             concerns_topic="lift", needs="code")
+
+    assert store.claim_task("Archivist") is None,         "an agent must not claim work it cannot do"
+    assert store.claim_task("Coder") == code
+    assert store.claim_task("Reviewer") == review
+    assert store.claim_task("Coder") is None, "nothing left"
+
+
+@test
+def test_claiming_by_capability_is_still_one_query():
+    """The capability arm is a pattern predicate in the same WHERE, so the
+    claim is still a single compare-and-set. A read-then-write here would
+    reintroduce the lost update measured at 16 of 16 workers."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.create_task(sid, "Planner", "Reviewer", "only one",
+                      concerns_topic="lift", needs="review")
+    before = store.writes
+    first = store.claim_task("Reviewer")
+    assert store.writes - before == 1, "the claim must be exactly one write"
+    assert first is not None
+    assert store.claim_task("Reviewer") is None, "claimed twice"
+
+
+@test
+def test_an_unknown_capability_is_refused():
+    """A model inventing a capability nothing handles would produce work
+    that can never be claimed -- assigned-looking and silently stranded."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    try:
+        store.create_task(sid, "Planner", "Reviewer", "x", needs="telepathy")
+    except ValueError:
+        return
+    raise AssertionError("an unknown capability must be refused")
+
+
+@test
+def test_the_coder_and_archivist_cannot_rewrite_what_they_read():
+    """The Coder's claim is that its code matches what was agreed, and the
+    Archivist's is that its insight summarises real episodes. Neither
+    survives if the agent can edit its own source material."""
+    from agents.toolbox import ARCHIVIST_TOOLS, CODER_TOOLS
+    forbidden = {"remember_fact", "retire_fact", "assert_fact",
+                 "record_decision", "learn_procedure", "retire_procedure"}
+    assert not (set(CODER_TOOLS) & forbidden), set(CODER_TOOLS) & forbidden
+    assert not (set(ARCHIVIST_TOOLS) & forbidden)
+    # and neither is handed its rules -- it must look them up, or
+    # find_prompt_leaks would rightly count them as having been told
+    store = empty_store()
+    store.start_session(user="Siddhi", session_id="s1")
+    for build in (build_coder, build_archivist):
+        a = build(store, "s1", FakeAdapter([says("x")]))
+        assert a.standing_rules is False, a.name
+        assert a.roster is False, a.name
 
 
 print()

@@ -664,7 +664,49 @@ Two things to know. It matches **whole words**: `queue` does not find
 `MemoryStore._read`'s own first argument is named `q` and passing `q=`
 collides with it — caught by a `TypeError` on the first run.
 
-## 21. Indexes
+## 21. Claiming work you are able to do
+
+The handoff began as point-to-point: a task was addressed to an agent by
+name, and that name lived in the Planner's prompt. Adding an agent meant
+editing a prompt and shipping code.
+
+Now a task says what it **needs** and an agent claims what it **handles**:
+
+```cypher
+MATCH (t:Task) WHERE t.status = 'open' AND (
+  (t)-[:ASSIGNED_TO]->(:Agent {name: $agent}) OR
+  (t)-[:NEEDS]->(:Capability)<-[:HANDLES]-(:Agent {name: $agent}) )
+WITH t ORDER BY t.created_at, t.id LIMIT 1
+SET t.status = 'claimed', t.claimed_by = $agent, t.claimed_at = $now
+RETURN t.id AS id
+```
+
+Three things are load-bearing:
+
+- **It is still one query.** The capability arm is a pattern predicate
+  inside the same `WHERE` — verified on v6.0.2 — so this remains a single
+  compare-and-set. Splitting it into a lookup and a write would
+  reintroduce the lost update measured at 16 of 16 workers.
+- **`WITH t ... LIMIT 1` before the `SET`.** A trailing `LIMIT` does not
+  constrain the write and would claim every open task at once.
+- **The `OR`**, not a replacement. Work addressed by name still arrives;
+  capability matching is additional.
+
+And the roster that drives it is a query too:
+
+```cypher
+MATCH (a:Agent)-[:HANDLES]->(c:Capability)
+WITH a, collect(c.name) AS caps
+RETURN a.name, a.role, caps ORDER BY a.name
+```
+
+That is what the Planner is shown each turn, so an `Agent` node written by
+hand — with a role and a capability — is routed to without anything being
+recompiled. Agents with no capability are left out: they can be addressed
+by name, but nothing can be routed to them, and offering one as a
+destination would strand the work.
+
+## 22. Indexes
 
 ```cypher
 CREATE INDEX FOR (n:Event) ON (n.id)

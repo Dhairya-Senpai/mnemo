@@ -80,7 +80,8 @@ class Agent:
 
     def __init__(self, name, toolbox, llm: LLMAdapter, prompt=None,
                  prompt_name=None, max_tool_calls=DEFAULT_MAX_TOOL_CALLS,
-                 standing_rules=False, topic_index=False, curator=None):
+                 standing_rules=False, topic_index=False, curator=None,
+                 roster=False):
         if prompt is None and prompt_name is None:
             raise ValueError("pass prompt or prompt_name")
         self.name = name
@@ -99,6 +100,9 @@ class Agent:
         # The index of past subjects, same reasoning as above: a model cannot
         # ask for a conversation whose existence it does not know about.
         self.topic_index = topic_index
+        # Who else exists. Same reasoning a third time: an agent cannot hand
+        # work to a colleague it has never heard of.
+        self.roster = roster
         # An adapter for the curation pass, or None to leave the graph
         # unchanged by this agent's turns. The Planner curates; the Reviewer
         # does not, because its job is to act on what is there rather than to
@@ -125,8 +129,34 @@ class Agent:
             f"{about_user}"
             f"Today's date is {store.now()[:10]}.\n"
             f"{self._standing_rules()}"
+            f"{self._roster()}"
             f"{self._topic_index()}"
         )
+
+    def _roster(self) -> str:
+        """Who else can be handed work, read from the graph.
+
+        Routing used to be a constant: the Planner knew the word "Reviewer"
+        because its prompt said so, and a new agent meant editing a prompt
+        and shipping code. Reading the roster instead means an `Agent` node
+        with a role and a capability is routed to without anything being
+        changed -- the list the model sees is the list that exists.
+        """
+        if not self.roster:
+            return ""
+        try:
+            agents = self.toolbox.store.agent_roster(exclude=(self.name,))
+        except Exception:
+            return ""                      # never break a turn over this
+        if not agents:
+            return ""
+        lines = "\n".join(
+            f"- {a['agent']} ({', '.join(a['handles'])}): {a['role']}"
+            for a in agents)
+        return (
+            "\nOther agents you can hand work to with create_task. Pass "
+            "`needs`\nwith the capability in brackets, and attach what the "
+            "work concerns:\n" + lines + "\n")
 
     # The index, not the content. Putting past turns themselves in here would
     # re-open the bug in docs/TESTING.md section 3 attempt 3: an agent reading

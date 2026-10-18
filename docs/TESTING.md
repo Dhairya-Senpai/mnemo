@@ -877,6 +877,114 @@ Six tools, every one a graph read, and nothing about the work reached it in
 prose. The graph afterwards holds two `Agent` nodes, one `Task` marked
 `done`, and a `CONCERNS` edge to the subject.
 
+## 3l. Four agents, and what it took to make three of them work
+
+Built on request: a roster read from the graph, claiming by capability,
+and two more agents — a **Coder** that writes to the settled design and an
+**Archivist** that consolidates.
+
+The routing itself was easy and is the part worth keeping. `Agent.role`
+had existed since the seeder and was read by nothing; it is now the roster
+the Planner sees, so adding an agent is writing a node rather than editing
+a prompt. A task says what it `NEEDS`, an agent `HANDLES` capabilities,
+and the claim stays **one** query because the capability arm is a pattern
+predicate in the same `WHERE` — verified on v6.0.2:
+
+```cypher
+MATCH (t:Task) WHERE t.status = 'open' AND (
+  (t)-[:ASSIGNED_TO]->(:Agent {name:$agent}) OR
+  (t)-[:NEEDS]->(:Capability)<-[:HANDLES]-(:Agent {name:$agent}) )
+WITH t ORDER BY t.created_at, t.id LIMIT 1
+SET t.status = 'claimed', ...
+```
+
+Everything else was failures, and they fall into two groups.
+
+### The model would not pass the arguments
+
+Told in the tool description and the roster to pass `needs` and attach
+what the work concerns, a live Planner called `create_task` with neither.
+The task was unroutable and subject-less — assigned-looking and stranded.
+
+Prompting harder would have been the fifth attempt at a tactic this file
+records failing four times. Instead the graph fills both gaps: if the
+caller names an agent, the capability comes from what that agent
+`HANDLES`; if no subject is given, it carries from the session's topic, or
+is resolved from the task title with `resolve_topic`. The roster already
+knows these things, so the handoff no longer depends on the model
+remembering an argument.
+
+### More tools made the agents worse
+
+The Coder was given eleven tools. It spent six calls reading, then replied
+with **a summary of its own process instead of code** — and told
+`complete_task` it had written something it never produced. An agent
+asserting work it did not do is the worst failure in this project's
+vocabulary.
+
+Cut to four tools — claim, context, rules, complete — it wrote the Java.
+`get_task_context` already returns the settled design, so the
+specification arrives in one read and the next thing to do is type. Fewer
+tools is the structural version of "stop researching and start writing",
+and it worked where two rounds of prompt pressure had not.
+
+The Archivist repeated it exactly. Given eleven tools it skipped
+`consolidation_candidates` — the one tool that knows which episodes are
+unabsorbed — guessed a label for `events_about`, found nothing, and
+declined the task reporting there was no material. **There were seven
+episodes.** Cut to five tools, it consolidated them.
+
+### And `ENTITY_LABELS`, for the fourth and fifth time
+
+This is the finding worth carrying forward, because the same closed list
+has now been too narrow in five separate places.
+
+`consolidation_candidates` chose `DataStructure` with seven unabsorbed
+episodes. `events_about` then **refused the label**:
+
+```
+ValueError: unsupported entity label 'DataStructure';
+            expected one of ('Person', 'Project', 'System', 'Decision')
+```
+
+The graph chose work the reader was forbidden to read, and the Archivist
+truthfully reported finding nothing. `recall_related`, `record_insight`
+and `current_insights` had the same guard. All four now use
+`check_any_entity_label`, which accepts a closed label or validates an
+open one by pattern — the same defence the open layer uses everywhere
+else.
+
+Underneath that, one more silent no-op in the family of 2.1:
+`record_insight` attached its subject with a bare `MATCH ... CREATE`, so
+when the label did not match it wrote an Insight with seven correct
+`DERIVED_FROM` edges **and no subject at all** — present, correct, and
+invisible to `current_insights`. It raises now.
+
+### Verified live, all four
+
+`ornith:9b`, one workspace, each agent in its own session:
+
+```
+Planner    "get the coder to write the pending floor request queue"
+           -> what_was_decided, read_topic, create_task
+           -> task NEEDS 'code', CONCERNS Topic 'lift controller'
+                                      (both derived from the graph)
+
+Coder      claim_task, get_task_context, get_applicable_procedures,
+           complete_task
+           -> Java, a comment on every line, built on the settled
+              ArrayDeque.  leaks: []
+
+Archivist  claim_task, get_task_context, consolidation_candidates,
+           events_about, record_insight, complete_task
+           -> one Insight over 7 episodes, 7 DERIVED_FROM.  leaks: []
+
+Reviewer   (section 3k)                                  leaks: []
+```
+
+Three agents, none of which saw the conversation, each told the same
+single trigger sentence.
+
 ## 4. Still open
 
 - **A person's own words are still recalled after the fact is retired.**
@@ -898,6 +1006,11 @@ prose. The graph afterwards holds two `Agent` nodes, one `Task` marked
   what counts as deciding. Observed to discriminate correctly between a
   question, an option list and a choice on a live run, but that is one run
   on one model, not a measurement.
+
+- **Agent routing is only as good as the model.** The Planner picks from
+  a roster it reads, and on a 9B model it sometimes answers itself rather
+  than handing off. Two agents that always work would be a safer demo than
+  four that usually do.
 
 - **Topic synonyms still fragment.** Normalising case and spacing stops
   `Lift Control Logic` and `lift control logic` splitting, and showing the

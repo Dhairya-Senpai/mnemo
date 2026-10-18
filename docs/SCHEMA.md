@@ -159,6 +159,7 @@ is all we need; test before claiming more.)*
 | `Ticket` | `id`, `title`, `created_at` | Operational |
 | `Lookup` | `id`, `tool`, `arguments`, `ts`, `agent`, `session` | Episodic |
 | `Topic` | `name`, `first_seen` | Semantic (identity) |
+| `Capability` | `name`, `description` | — (routing) |
 
 ### Why each node exists
 
@@ -234,6 +235,12 @@ episode in the organisation's history: making it one would flood
 `recall_recent`, pull lookups into `consolidation_candidates` as raw material,
 and put the agent's own reading into the transcript the UI replays. Separate
 label, same tier, different purpose.
+
+**`Capability`** — a thing an agent can be asked to do (`review`,
+`consolidate`, `code`). A closed vocabulary, because it is matched against
+in the claim query and a capability nothing handles produces work that can
+never be claimed — assigned-looking and silently stranded. Reserved, so an
+open fact cannot impersonate one.
 
 **`Topic`** — what a turn of conversation was *about*. Added 18 Oct, and the
 measurement that forced it: across the three workspaces in real use, **47 of
@@ -322,6 +329,8 @@ pattern with an open `valid_to`, so a supersession edge would be redundant.
 
 | Relationship | Why it exists |
 |---|---|
+| `(Agent)-[:HANDLES]->(Capability)` | What an agent can be asked to do. With `Agent.role`, this is the roster the Planner reads — so adding an agent is writing a node, not editing a prompt. `role` existed from the seeder and was read by nothing until this. |
+| `(Task)-[:NEEDS]->(Capability)` | What the work requires, as distinct from who should do it. An agent claims work it *can do*, which is the difference between coordination and point-to-point messaging. Derived from the assignee's capability when a caller omits it. |
 | `(Agent)-[:CREATED]->(Task)` | Who asked. |
 | `(Task)-[:ASSIGNED_TO]->(Agent)` | Who must act. Split from `CREATED` so the two are separately queryable. |
 | `(Task)-[:CONCERNS]->(Decision\|Project\|Topic)` | **The literal replacement for message-passing.** The claiming agent reads what the task is about from the graph, not from a prompt. |

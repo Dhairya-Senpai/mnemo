@@ -31,6 +31,9 @@ from falkordb import FalkorDB
 from redis.exceptions import ResponseError
 
 from .schema import (
+    CAPABILITIES,
+    check_any_entity_label,
+    DEFAULT_AGENTS,
     ENTITY_LABELS,
     EVENT_KINDS,
     FACT_ENDPOINTS,
@@ -38,6 +41,7 @@ from .schema import (
     INDEXES,
     PROCEDURE_SCOPES,
     not_entity_clause,
+    check_capability,
     check_fact_type,
     check_label,
     clean_label as check_open_label,
@@ -205,6 +209,52 @@ class MemoryStore:
                 if "already indexed" not in str(exc).lower():
                     raise
         self._indexed = True
+        # The roster belongs to every workspace, not only seeded ones --
+        # the same lesson as the indexes themselves.
+        self.ensure_agents()
+
+    # -------------------------------------------------------------- the roster
+
+    def ensure_agents(self):
+        """Put the agent roster in the graph, idempotently.
+
+        Routing is a query, not a constant. Until now the Planner knew the
+        word "Reviewer" because its prompt said so, which meant a new agent
+        needed a prompt edit and a code change. With the roster in the
+        graph, adding one is writing a node -- and an `Agent` written by
+        hand, with a role and a capability, is routed to without anything
+        being recompiled.
+
+        `Agent.role` has existed since the seeder and was read by nothing.
+        This is what it was for.
+        """
+        for name, (role, handles) in DEFAULT_AGENTS.items():
+            self._write(
+                "MERGE (a:Agent {name:$name}) SET a.role = $role",
+                name=name, role=role)
+            for cap in handles:
+                self._write(
+                    "MATCH (a:Agent {name:$name}) "
+                    "MERGE (c:Capability {name:$cap}) "
+                    "ON CREATE SET c.description = $desc "
+                    "MERGE (a)-[:HANDLES]->(c)",
+                    name=name, cap=check_capability(cap),
+                    desc=CAPABILITIES[cap])
+
+    def agent_roster(self, exclude=("Planner",)):
+        """Who can be handed work, and what each one is for.
+
+        Read from the graph so the list the Planner sees is the list that
+        exists. Agents with no capability are left out: they can be
+        addressed by name but nothing can be routed to them, and offering
+        one as a destination would strand the work.
+        """
+        rows = self._read(
+            "MATCH (a:Agent)-[:HANDLES]->(c:Capability) "
+            "WITH a, collect(c.name) AS caps "
+            "RETURN a.name, a.role, caps ORDER BY a.name")
+        return [{"agent": r[0], "role": r[1], "handles": r[2]}
+                for r in rows if r[0] not in (exclude or ())]
 
     # ------------------------------------------------------------------ episodic
 
@@ -260,7 +310,10 @@ class MemoryStore:
             self._write("MATCH (e:Event {id:$eid}) SET e.speaker = $speaker",
                         eid=eid, speaker=speaker)
         for label, name in about or []:
-            check_label(label, ENTITY_LABELS, "ABOUT target")
+            # Open-layer labels too: an episode about an Appointment or a
+            # DataStructure is as real as one about a Project, and the
+            # closed list here was the fourth place that assumption bit.
+            label = check_any_entity_label(label, "ABOUT target")
             key = "id" if label == "Decision" else "name"
             self._write(
                 f"MATCH (e:Event {{id:$eid}}), (n:{label} {{{key}:$name}}) "
@@ -951,7 +1004,7 @@ class MemoryStore:
         participates in. This is the main multi-hop read and the Track 01
         "graph query as agent tool".
         """
-        check_label(label, ENTITY_LABELS, "entity label")
+        label = check_any_entity_label(label)
         key = "id" if label == "Decision" else "name"
 
         events = self._read(
@@ -1659,8 +1712,15 @@ class MemoryStore:
         ]
 
     def events_about(self, label, name, only_unconsolidated=True, limit=20):
-        """The episodes that mention an entity, oldest first (reading order)."""
-        check_label(label, ENTITY_LABELS, "entity label")
+        """The episodes that mention an entity, oldest first (reading order).
+
+        Accepts an open-layer label. `consolidation_candidates` picks the
+        work from whatever the graph holds, so refusing anything outside
+        `ENTITY_LABELS` here meant the chooser and the reader disagreed --
+        and the Archivist declined seven real episodes it was not allowed
+        to see.
+        """
+        label = check_any_entity_label(label)
         key = "id" if label == "Decision" else "name"
         absorbed = ("AND NOT (e)<-[:DERIVED_FROM]-(:Insight) "
                     if only_unconsolidated else "")
@@ -1680,7 +1740,7 @@ class MemoryStore:
         cannot be traced to its sources is an unverifiable assertion, and it
         is also what stops those episodes being consolidated again.
         """
-        check_label(label, ENTITY_LABELS, "entity label")
+        label = check_any_entity_label(label)
         if not source_event_ids:
             raise ValueError("an insight needs at least one source event")
         key = "id" if label == "Decision" else "name"
@@ -1707,17 +1767,26 @@ class MemoryStore:
                 f"expected {len(source_event_ids)} source events, "
                 f"linked {res.relationships_created}"
             )
-        self._write(
+        # Loud, not silent. This MATCH finding nothing leaves an Insight
+        # with its sources but no subject -- it exists, it is correct, and
+        # `current_insights` cannot see it. Exactly the shape of bug 2.1,
+        # and it happened: a consolidation of seven episodes landed
+        # unreachable because the entity label did not match.
+        res = self._write(
             f"MATCH (i:Insight {{id:$iid}}), (n:{label} {{{key}:$name}}) "
             f"CREATE (i)-[:ABOUT]->(n)",
             iid=iid, name=name,
         )
+        if not res.relationships_created:
+            raise LookupError(
+                f"insight written but not attached: no {label} named "
+                f"{name!r} to be about")
         return iid
 
     def current_insights(self, label=None, name=None):
         """Insights in force, optionally about one entity, with source counts."""
         if label:
-            check_label(label, ENTITY_LABELS, "entity label")
+            label = check_any_entity_label(label)
             key = "id" if label == "Decision" else "name"
             rows = self._read(
                 f"MATCH (i:Insight)-[:ABOUT]->(n:{label} {{{key}:$name}}) "
@@ -1767,7 +1836,7 @@ class MemoryStore:
 
     def create_task(self, session_id, agent, assigned_to, title,
                     concerns_decision=None, concerns_project=None,
-                    concerns_topic=None):
+                    concerns_topic=None, needs=None):
         """Hand work to another agent. The task IS the message.
 
         CONCERNS carries the context, so the claiming agent reads what the task
@@ -1823,6 +1892,41 @@ class MemoryStore:
                 "CREATE (t)-[:CONCERNS]->(p)",
                 tid=tid, project=concerns_project,
             )
+        # If the caller named an agent but not a capability, ask the graph
+        # what that agent handles. Told to attach `needs`, a live model
+        # simply did not -- producing a task that no capability match could
+        # ever claim. Deriving it is the structural answer: the roster
+        # already knows, so the handoff does not depend on the model
+        # remembering an argument.
+        if not needs and assigned_to:
+            handled = self._read(
+                "MATCH (:Agent {name:$name})-[:HANDLES]->(c:Capability) "
+                "RETURN c.name", name=assigned_to)
+            if len(handled) == 1:
+                needs = handled[0][0]
+        # Likewise the subject: a task about nothing cannot be read by the
+        # agent that claims it, and the conversation already knows what it
+        # is about. Same carry-forward the curator uses.
+        if not (concerns_topic or concerns_project or concerns_decision):
+            carried = self.session_topics(session_id, limit=1)
+            if carried:
+                concerns_topic = carried[0]
+            else:
+                # A handoff made in a fresh chat has no session topic to
+                # carry, but the title almost always names the subject --
+                # "write the pending floor request queue". resolve_topic
+                # already forgives loose wording, so match against what the
+                # workspace actually holds rather than coining a new one.
+                concerns_topic = self.resolve_topic(title)
+        if needs:
+            # What the work requires, rather than only who should do it.
+            # An agent then claims what it can do -- see claim_task.
+            self._write(
+                "MATCH (t:Task {id:$tid}) MERGE (c:Capability {name:$cap}) "
+                "ON CREATE SET c.description = $desc "
+                "MERGE (t)-[:NEEDS]->(c)",
+                tid=tid, cap=check_capability(needs),
+                desc=CAPABILITIES[needs])
         if concerns_topic:
             # MERGE, not MATCH: the Planner may hand off a subject the
             # curator has not written yet, and a task pointing at nothing is
@@ -1848,11 +1952,23 @@ class MemoryStore:
         `WITH t ... LIMIT 1` before the SET is load-bearing. A trailing LIMIT
         would NOT constrain the write and would claim every open task at once.
 
+        An agent claims work **addressed to it by name or matching something
+        it can do**. The second half is what makes this coordination rather
+        than messaging: a task says what it needs, and whichever agent
+        handles that takes it. Adding an agent that handles `review` means
+        review work can go to it without anything that files tasks being
+        changed.
+
+        The capability arm is a pattern predicate inside the same `WHERE`,
+        verified on v6.0.2, so this is still **one** query that both tests
+        and sets -- the property the whole handoff rests on.
+
         Returns the claimed task's id, or None if there was nothing to claim.
         """
         res = self._write(
-            "MATCH (t:Task)-[:ASSIGNED_TO]->(:Agent {name:$agent}) "
-            "WHERE t.status = 'open' "
+            "MATCH (t:Task) WHERE t.status = 'open' AND ( "
+            "  (t)-[:ASSIGNED_TO]->(:Agent {name:$agent}) OR "
+            "  (t)-[:NEEDS]->(:Capability)<-[:HANDLES]-(:Agent {name:$agent}) ) "
             "WITH t ORDER BY t.created_at, t.id LIMIT 1 "
             "SET t.status = 'claimed', t.claimed_by = $agent, t.claimed_at = $now "
             "RETURN t.id AS id",

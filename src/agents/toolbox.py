@@ -323,6 +323,40 @@ def _build_catalogue() -> dict[str, Tool]:
         {"text": _STR, "limit": _INT}, ["text"],
         lambda s, a, sid, text, limit=8: s.search_turns(text, limit=limit))
 
+    add("consolidation_candidates",
+        "Entities with several episodes that no insight has absorbed yet. "
+        "This is the graph choosing the work: anything already consolidated "
+        "drops out on its own, so the same material cannot be summarised "
+        "twice.",
+        {"min_events": _INT, "limit": _INT}, [],
+        lambda s, a, sid, min_events=3, limit=5:
+            s.consolidation_candidates(min_events=min_events, limit=limit))
+
+    add("events_about",
+        "The episodes recorded about one entity. Pass the label and the "
+        "name. Episodes already absorbed into an insight are left out.",
+        {"label": _STR, "name": _STR, "limit": _INT}, ["label", "name"],
+        lambda s, a, sid, label, name, limit=20:
+            s.events_about(label, name, limit=limit))
+
+    add("record_insight",
+        "Write one lasting insight drawn from several episodes, citing "
+        "every episode it came from. Use the event ids returned by "
+        "events_about, so the insight keeps a link back to its sources.",
+        {"label": _STR, "name": _STR, "text": _STR,
+         "source_event_ids": {"type": "array", "items": _STR}},
+        ["label", "name", "text", "source_event_ids"],
+        lambda s, a, sid, label, name, text, source_event_ids:
+            {"insight_id": s.record_insight(sid, a, label, name, text,
+                                            source_event_ids)})
+
+    add("current_insights",
+        "Insights that are still current, newest first. Pass a label and "
+        "name to narrow to one entity.",
+        {"label": _STR, "name": _STR}, [],
+        lambda s, a, sid, label=None, name=None:
+            s.current_insights(label=label, name=name))
+
     add("explain_answer",
         "Why an agent answered as it did earlier. Returns the reads behind a "
         "past answer, in order, and which nodes each one returned. Pass "
@@ -365,6 +399,35 @@ REVIEWER_TOOLS = (
     "retire_fact", "assert_fact", "create_ticket", "complete_task",
     "explain_answer", "recent_conversations", "read_conversation",
     "read_topic", "what_was_decided", "search_conversation",
+)
+
+# The Coder writes code from the settled design and the standing rules. It
+# reads widely and writes almost nothing: it must not be able to change the
+# memory it is building from, or "the code matches what was agreed" stops
+# being checkable.
+# Deliberately four tools, not eleven. With a browsing toolset a 9B model
+# spent six calls reading and then answered with a summary of its own
+# process instead of code -- claiming work it had not done. `get_task_context`
+# already returns the settled design, so the specification arrives in one
+# read and the next thing to do is write. Fewer tools is the structural
+# version of "stop researching and start typing".
+CODER_TOOLS = (
+    "claim_task", "get_task_context", "get_applicable_procedures",
+    "complete_task",
+)
+
+# The Archivist makes memory smaller. It needs the episodes and the one
+# tool that writes an Insight, and nothing that would let it edit the
+# episodes it is summarising -- history stays as it was.
+# Five tools, for the reason CODER_TOOLS has four. Given eleven, a 9B
+# model skipped `consolidation_candidates` -- the one tool that knows which
+# episodes are unabsorbed -- guessed a label for `events_about`, found
+# nothing, and declined the task saying there was no material. There were
+# seven episodes. The graph choosing the work only helps if the agent asks
+# it, so the path is narrowed until asking is the obvious move.
+ARCHIVIST_TOOLS = (
+    "claim_task", "get_task_context", "consolidation_candidates",
+    "events_about", "record_insight", "complete_task",
 )
 
 

@@ -32,6 +32,7 @@ KEY_PROPERTY = {
     "Ticket": "id",
     "Agent": "name",
     "Topic": "name",
+    "Capability": "name",
 }
 
 # What an Event may be ABOUT *by label*. Still closed, because the label is
@@ -40,6 +41,44 @@ KEY_PROPERTY = {
 # resolves by name and joins on internal id, so nothing is interpolated.
 ENTITY_LABELS = ("Person", "Project", "System", "Decision")
 
+# What an agent can be asked to do. A closed vocabulary on purpose: these
+# are matched against in the claim query, and a model inventing a capability
+# nothing handles would produce tasks that can never be claimed -- work that
+# looks assigned and is silently stranded.
+#
+# The roster that routes work is read from the *graph*, not from here. This
+# table only seeds it, so an Agent node written by hand still appears to the
+# Planner and can still be handed work.
+CAPABILITIES = {
+    "review": "checks work against what was decided and the standing rules",
+    "consolidate": "turns repeated episodes about one subject into a single "
+                   "lasting insight",
+    "code": "writes code to the settled design and the standing rules, "
+            "working from the graph rather than from the conversation",
+}
+
+# name -> (role, capabilities). Seeded into every workspace by
+# `ensure_agents`, which is idempotent.
+DEFAULT_AGENTS = {
+    "Planner": ("Talks to the person, records what they say, and hands work "
+                "to the agent that handles it", ()),
+    "Reviewer": ("Checks work against remembered decisions and standing "
+                 "rules, and acts when something conflicts", ("review",)),
+    "Archivist": ("Consolidates repeated episodes into one lasting insight, "
+                  "with links back to every source", ("consolidate",)),
+    "Coder": ("Writes code to the settled design and the standing rules, "
+              "without seeing the conversation", ("code",)),
+}
+
+
+def check_capability(name):
+    if name not in CAPABILITIES:
+        raise ValueError(
+            f"unknown capability {name!r}; expected one of "
+            f"{tuple(CAPABILITIES)}")
+    return name
+
+
 # Labels that are never "a thing someone mentions", so they are excluded
 # wherever a turn is linked to what it talked about. Three groups: plumbing
 # (Event, Session, Lookup, Agent), the topic index itself, and behavioural
@@ -47,7 +86,7 @@ ENTITY_LABELS = ("Person", "Project", "System", "Decision")
 # refers to -- a Procedure called "comment every line" would otherwise be
 # offered to the curator as an entity to mention.
 NON_ENTITY_LABELS = ("Event", "Session", "Lookup", "Agent", "Topic",
-                     "Procedure", "Insight", "Task", "Ticket")
+                     "Procedure", "Insight", "Task", "Ticket", "Capability")
 
 
 def not_entity_clause(var="n"):
@@ -75,6 +114,8 @@ INDEXES = [
     # Every turn resolves its topics by name, so this one is read on the
     # hot path rather than only by the demo.
     ("Topic", "name"),
+    # Routing reads this on every handoff.
+    ("Capability", "name"),
 ]
 
 # Full-text indexes, which take different DDL from the range indexes above.
@@ -120,7 +161,7 @@ _PREDICATE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,40}$")
 # expects properties an open fact does not have.
 RESERVED_LABELS = frozenset({
     "Agent", "Session", "Event", "Decision", "Procedure", "Insight",
-    "Task", "Ticket", "Lookup", "Topic",
+    "Task", "Ticket", "Lookup", "Topic", "Capability",
 })
 
 # Likewise for edges: these carry behaviour elsewhere in the system.
@@ -128,7 +169,7 @@ RESERVED_PREDICATES = frozenset({
     "HAS_EVENT", "PERFORMED", "ABOUT", "RECORDED_IN", "LEARNED_FROM",
     "DERIVED_FROM", "MADE", "SUPERSEDES", "CREATED", "ASSIGNED_TO",
     "CONCERNS", "FILED", "BLOCKS", "CITES", "APPLIES_TO",
-    "READ", "RETURNED", "ON_TOPIC", "SETTLES",
+    "READ", "RETURNED", "ON_TOPIC", "SETTLES", "HANDLES", "NEEDS",
 }) | set(FACT_ENDPOINTS)
 
 
@@ -167,6 +208,33 @@ def clean_predicate(predicate: str) -> str:
         raise ValueError(
             f"{text!r} is a built-in relationship with its own behaviour; "
             f"use the dedicated tool for it")
+    return text
+
+
+def check_any_entity_label(label, what="entity label"):
+    """Accept a closed entity label OR a valid open-layer one.
+
+    `ENTITY_LABELS` is a whitelist written for the seeded company world,
+    and using it to guard *reads* locked the open layer out of its own
+    data. The failure was perfect: `consolidation_candidates` chose
+    `DataStructure` with seven unabsorbed episodes, `events_about` refused
+    the label, and the Archivist reported there was nothing to
+    consolidate -- which, from where it sat, was true.
+
+    That is the fourth place this list has been too narrow (see
+    `PROCEDURE_SCOPES`, ABOUT targets, and `CONCERNS` in
+    docs/TESTING.md). Reads get pattern validation instead, which is the
+    same defence the open layer uses everywhere else: the characters that
+    could break out of the identifier position are refused, and a label
+    nobody has heard of simply matches nothing.
+    """
+    if label in ENTITY_LABELS:
+        return label
+    text = (label or "").strip()
+    if not _LABEL_RE.match(text):
+        raise ValueError(
+            f"unsupported {what} {label!r}: use a short name starting with "
+            f"a letter, letters digits and underscores only")
     return text
 
 
