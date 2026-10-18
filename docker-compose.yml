@@ -53,10 +53,16 @@ services:
       retries: 30
     restart: unless-stopped
     # ---- GPU, if you have one -------------------------------------------
-    # Uncomment with the NVIDIA Container Toolkit installed. Without it the
-    # model runs on CPU, which works and is slow: expect tens of seconds a
-    # turn rather than a couple. Left commented because a GPU block that
-    # cannot be satisfied stops the stack from starting at all.
+    # Uncomment with the NVIDIA Container Toolkit installed. Left commented
+    # because a GPU block that cannot be satisfied stops the stack from
+    # starting at all.
+    #
+    # Without a GPU this runs on CPU, and "slow" undersells it: measured
+    # here at 16.8 tokens/second of prompt processing, against an agent
+    # prompt of roughly 4,300 tokens -- about four minutes before the first
+    # call even begins generating, and a turn makes several calls. For a
+    # demo, use docker-compose.host-ollama.yml against a natively installed
+    # Ollama, or set MNEMO_MODEL to something small.
     #
     # deploy:
     #   resources:
