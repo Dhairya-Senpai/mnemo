@@ -6,6 +6,12 @@
 CLAUDE.md
 PROJECT_CONTEXT.md
 
+# Kept out of the repository by choice. The README carries the graph model,
+# the queries, the testing record and the AI disclosure directly, so these
+# are the long-form working copies rather than the submission.
+docs/
+tests/
+
 # Editor and tooling config. `.claude/launch.json` defines a dev server
 # for one particular editor; the project is run with `streamlit run app.py`
 # as the README says, so it belongs to the machine rather than the repo.
