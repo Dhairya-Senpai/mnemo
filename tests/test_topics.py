@@ -702,6 +702,54 @@ def test_the_replayed_history_comes_from_the_graph():
 
 
 @test
+def test_a_long_code_answer_still_reaches_the_next_turn():
+    """The exact shape that failed in the browser after the first fix.
+
+    A 6,918-character Java answer, then "can you add my uid in this code?".
+    Trimming by individual message kept the big assistant turn (the budget
+    check is skipped while nothing is kept), then "yes" broke the loop, and
+    the rule that a history may not begin on an assistant message popped
+    the only thing left. Two correct guards, an empty history, and the
+    agent answering "I don't see any code in your message" for the second
+    time.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.record_event(sid, "Planner", "message", "what was problem 1569?",
+                       speaker="user")
+    store.record_event(sid, "Planner", "message", "It is a BST problem.",
+                       speaker="Planner")
+    store.record_event(sid, "Planner", "message", "yes", speaker="user")
+    big = "\n".join(["class Solution {"] + ["    // line"] * 600 + ["}"])
+    assert len(big) > 6000, len(big)
+    store.record_event(sid, "Planner", "message", big, speaker="Planner")
+
+    history = build_planner(store, sid,
+                            FakeAdapter([says("ok"), curation()]))._history()
+    said = " ".join(m.text for m in history)
+    assert big in said, "the code the person is pointing at must survive"
+    assert history[0].role == "user"
+    assert history[-1].role == "assistant"
+
+
+@test
+def test_an_exchange_is_kept_whole_or_not_at_all():
+    """Keeping half an exchange orphans a reply from its question."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    for i in range(8):
+        store.record_event(sid, "Planner", "message", f"q{i} " + "x" * 2000,
+                           speaker="user")
+        store.record_event(sid, "Planner", "message", f"a{i} " + "y" * 2000,
+                           speaker="Planner")
+    history = build_planner(store, sid,
+                            FakeAdapter([says("ok"), curation()]))._history()
+    roles = [m.role for m in history]
+    assert roles == ["user", "assistant"] * (len(roles) // 2), roles
+    assert history[0].role == "user"
+
+
+@test
 def test_history_is_bounded_and_starts_on_a_user_turn():
     """A turn here can be four thousand characters of Java, and a real run
     recorded "reply hit the context limit (num_ctx=16384)"."""

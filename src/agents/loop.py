@@ -200,7 +200,12 @@ class Agent:
     # rather than turns because a turn here can be four thousand characters
     # of Java: `failed_curations` recorded a real
     # "reply hit the context limit (num_ctx=16384)" on exactly that.
-    HISTORY_CHARS = 5000
+    # 5000 was too tight to be useful: one Java answer was 6,918 characters
+    # on its own, so a single code exchange did not fit and the history came
+    # back empty. The real ceiling is the model's window -- ornith:9b runs
+    # num_ctx=16384, roughly 65k characters, against which the system
+    # prompt, the tool schemas and the reply also have to fit.
+    HISTORY_CHARS = 12000
     HISTORY_TURNS = 20
 
     def _history(self) -> list[Message]:
@@ -231,20 +236,47 @@ class Agent:
                 self.toolbox.session_id, limit=self.HISTORY_TURNS)
         except Exception:
             return []                       # never break a turn over this
+        if not rows:
+            return []
+
+        # Group into exchanges -- a user message and everything said in
+        # reply -- and keep whole exchanges only. Trimming by individual
+        # message does not work: the first version kept the newest message,
+        # which for a code answer was a single 6,918-character assistant
+        # turn, then dropped it again because a history may not begin on an
+        # assistant message. Two correct guards, and between them they
+        # produced an empty history in precisely the case that matters --
+        # "can you add my uid to this code?" right after the code.
+        exchanges, current = [], []
+        for row in rows:
+            if row["speaker"] == "user" and current:
+                exchanges.append(current)
+                current = []
+            current.append(row)
+        if current:
+            exchanges.append(current)
+        # Anything before the first user message is a reply with no question
+        # in front of it; a provider will reject a history that starts that
+        # way, and it reads as the model talking to itself.
+        while exchanges and exchanges[0][0]["speaker"] != "user":
+            exchanges.pop(0)
+
         kept, total = [], 0
-        for row in reversed(rows):          # newest first, drop the oldest
-            text = row["text"] or ""
-            if total + len(text) > self.HISTORY_CHARS and kept:
+        for group in reversed(exchanges):   # newest first, drop the oldest
+            size = sum(len(r["text"] or "") for r in group)
+            # The most recent exchange goes in whatever it costs. It is what
+            # "this code" and "that one" refer to, and dropping it to stay
+            # under budget defeats the point of having a history at all.
+            if kept and total + size > self.HISTORY_CHARS:
                 break
-            total += len(text)
-            kept.append(row)
+            total += size
+            kept.append(group)
         kept.reverse()
-        while kept and kept[0]["speaker"] != "user":
-            kept.pop(0)
+
         return [
             Message(role="user" if r["speaker"] == "user" else "assistant",
                     text=r["text"])
-            for r in kept
+            for group in kept for r in group
         ]
 
     def _remember(self, speaker, text):

@@ -523,6 +523,47 @@ Claude adapter already rebuilds a `provider_state`-less assistant turn from
 text, so this is handled — **but no request has ever been sent to the
 Anthropic API, so that path remains unverified against the real thing.**
 
+### The same bug twice: trimming emptied the history
+
+The first fix did not work, and the second browser test found it in one
+message. A 6,918-character Java answer, then "can you add my uid in this
+code?", and the same reply as before.
+
+Walking the transcript newest-first, the budget check is skipped while
+nothing has been kept yet -- so the big assistant turn went in, then "yes"
+broke the loop on the next iteration. That left a history of one assistant
+message, and the rule that a history may not begin on an assistant message
+popped it. **Two individually correct guards, and between them an empty
+history in exactly the case the feature exists for.**
+
+The budget was also simply too small: 5,000 characters, against a single
+answer of 6,918.
+
+**Changed:** trimming works in whole exchanges -- a user message and
+everything said in reply -- so a reply is never orphaned from its question
+and the "must start on a user turn" rule can never empty the list. The most
+recent exchange is kept whatever it costs, because it is what "this code"
+refers to and dropping it defeats the point. Budget raised to 12,000
+characters, against `ornith:9b`'s 16,384-token window.
+
+A second, milder problem showed up once the code was visible. The agent
+could now see it -- "the code is a LeetCode solution" -- but asked which
+code was meant and offered three interpretations instead of editing it.
+Prompt-level fix, and flagged as such: asking someone to paste back
+something you wrote two messages ago is the worst available answer.
+
+Verified, `ornith:9b`:
+
+```
+turn 1   "give me a full java solution for leetcode 1569 ... with comments"
+         -> 5,936 characters
+         history available to the next turn: 2 messages, 6,045 chars
+                                             (previously: 0)
+
+turn 2   "can you add my uid 1222987805 in this code?"
+         -> returns the whole solution with "User: 1222987805" in the header
+```
+
 ## 3g. Three copies of the same preference
 
 **Found by:** the same session. Four `Decision` nodes, three of them the
