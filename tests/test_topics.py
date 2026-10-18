@@ -29,6 +29,7 @@ nothing about whether a real model extracts well.
 """
 
 import json
+import pathlib
 import sys
 import time
 from pathlib import Path
@@ -1345,6 +1346,101 @@ def test_the_coder_and_archivist_cannot_rewrite_what_they_read():
         a = build(store, "s1", FakeAdapter([says("x")]))
         assert a.standing_rules is False, a.name
         assert a.roster is False, a.name
+
+
+# ------------------------------------- nothing about the world in a prompt
+@test
+def test_no_prompt_names_anything_from_the_seeded_worlds():
+    """Prompts carry instructions and constraints, never data.
+
+    A role prompt that names a real person or project has told the agent
+    something it should have read, and `find_prompt_leaks` would be right
+    to count it. `archivist.txt` and `consolidate.txt` both illustrated
+    consolidation with "Ledger Migration" -- an actual Project in the Acme
+    graph -- and the curator prompt scoped a rule with "notify Priya",
+    who is an actual Person in it.
+
+    Checked against the shipped world files, including the first name of
+    every Person, because an example reading "notify Priya" does not
+    contain the string "Priya Nair".
+    """
+    import glob
+    import re
+
+    # Two kinds of name are worth banning, and a third is not.
+    #
+    # Multi-word names ("Ledger Migration", "Spring Launch") and people's
+    # names ("Priya", "Dana Ruiz") are distinctive: a prompt containing one
+    # is a prompt that has been told about the world.
+    #
+    # Single-word entity names are not. A `Reporting API` system makes
+    # "reporting" a banned word, and matching on substrings makes "Ship"
+    # fire inside "relationship". Both were false positives on the first
+    # run of this test.
+    banned = set()
+    for path in glob.glob(str(ROOT / "data" / "*.json")):
+        blob = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+        for person in blob.get("people", []):
+            full = person.get("name", "")
+            if full:
+                banned.add(full)
+                banned.add(full.split()[0])
+        for key in ("projects", "systems", "decisions"):
+            for item in blob.get(key, []):
+                label = item.get("name") or item.get("title") or ""
+                if len(label.split()) > 1:
+                    banned.add(label)
+
+    banned -= {"Planner", "Reviewer", "Coder", "Archivist"}
+    assert len(banned) > 10, f"world files should yield names: {sorted(banned)}"
+
+    offenders = {}
+    for path in sorted(glob.glob(str(ROOT / "prompts" / "*.txt"))):
+        text = pathlib.Path(path).read_text(encoding="utf-8")
+        # Word boundaries, or "Sam" matches inside "same" and every
+        # prompt is an offender. Written as explicit look-arounds
+        # rather than a backslash-b, because this line was mangled once
+        # by escaping into a literal backspace -- which matched nothing
+        # and left this test unable to fail. Planting a violation and
+        # watching it still pass is how that was found.
+        hit = sorted(n for n in banned
+                     if re.search(r"(?<![A-Za-z])" + re.escape(n)
+                                  + r"(?![A-Za-z])", text, re.I))
+        if hit:
+            offenders[pathlib.Path(path).name] = hit
+    assert not offenders, f"world data hardcoded in prompts: {offenders}"
+
+
+@test
+def test_everything_the_planner_is_told_about_the_person_comes_from_the_graph():
+    """The role prompt is fixed; the rest of the system prompt is a query.
+
+    Wipe the graph and the same agent should know nothing -- if a name, a
+    fact or a rule survives that, it was hardcoded.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    store.remember_fact(sid, "Planner", "Siddhi", "HAS", "a red bicycle",
+                        object_type="Thing")
+    store.learn_procedure(sid, "Planner", "brevity", "answering",
+                          "keep replies to three sentences")
+    store.link_event_topics(
+        store.record_event(sid, "Planner", "message", "x", speaker="user"),
+        ["bicycle maintenance"])
+
+    full = build_planner(store, sid, FakeAdapter([says("hi")])).system_prompt()
+    for carried in ("Siddhi", "a red bicycle", "brevity",
+                    "bicycle maintenance"):
+        assert carried in full, f"{carried!r} should be carried: {full[-600:]}"
+
+    # Same code, empty graph.
+    bare_store = empty_store()
+    bare = bare_store.start_session(user="", session_id="s2")
+    bare_prompt = build_planner(bare_store, bare,
+                                FakeAdapter([says("hi")])).system_prompt()
+    for gone in ("Siddhi", "a red bicycle", "brevity",
+                 "bicycle maintenance"):
+        assert gone not in bare_prompt,             f"{gone!r} survived an empty graph, so it was hardcoded"
 
 
 print()

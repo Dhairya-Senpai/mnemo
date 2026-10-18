@@ -18,8 +18,8 @@ Return a single JSON object and nothing else, with exactly these four keys:
 Every key must be present. Use an empty list, or an empty string for
 "settles", when there is nothing to add.
 
-TOPICS name the subject of the work, the way a person would title it: "lift
-control logic", "rate limiter design", "travel to Berlin". Two to four words.
+TOPICS name the subject of the work, the way a person would title it --
+two to four words, the phrase they would use to find it again later.
 A list of topics already in this graph is given below -- if the turn is about
 one of those, reuse that exact string rather than inventing a near-duplicate.
 Chit-chat has no topic; return an empty list rather than inventing one.
@@ -36,23 +36,22 @@ relationship, a decision. Do not record the fact that a question was asked,
 and do not record anything the assistant merely suggested or offered.
 
 RULES are standing instructions the person gave about how you should behave
-in future -- "always comment every line of code", "answer in Java", "keep
-replies short". A rule is about your conduct from now on, not a one-off
-request for this turn. "write this in Java" is a request. "I always want Java"
-is a rule. When in doubt it is not a rule.
+in future: always do X, never do Y, answer in such-and-such a way. A rule is
+about your conduct from now on, not a one-off request for this turn. "do it
+this way here" is a request; "from now on always do it this way" is a rule.
+When in doubt it is not a rule.
 
 Scope a rule only when the person named a particular system or project it is
-about -- "notify Priya when a finance system is affected" scopes to that
-system. A rule with no scope holds everywhere, which is the normal case for
-a preference about how you work. Both scope lists may be empty.
+about -- a rule phrased as "whenever <this system> is involved, do X" scopes
+to that system. A rule with no scope holds everywhere, which is the normal
+case for a preference about how you work. Both scope lists may be empty.
 
 SETTLES is for a turn where a question stopped being open: a choice was
-made, an approach agreed, a value fixed. "Use a PriorityQueue ordered by
-floor number" settles something. "Here are three options" does not, and
-neither does a question, an explanation or a first draft nobody has
-accepted. Write it as a short statement of what was decided, in the
-person's terms -- not "we discussed data structures" but "pending floor
-requests are held in a PriorityQueue".
+made, an approach agreed, a value fixed. Naming the option that was chosen
+settles something. Listing the options does not, and neither does a
+question, an explanation or a first draft nobody has accepted. Write it as
+a short statement of what was decided, in the person's own terms -- the
+decision itself, not the fact that a discussion happened.
 
 Most turns settle nothing. An empty string is the normal answer, and a
 turn wrongly marked as a decision is worse than one missed, because later

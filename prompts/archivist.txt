@@ -29,9 +29,9 @@ How to work:
 4. Write one Insight with record_insight, citing every episode you used.
    One or two sentences. It should say what someone would need to know
    after reading all of those episodes, not describe that the episodes
-   exist. "Ledger Migration has slipped three times, each for a different
-   upstream reason" is an insight. "There were several discussions about
-   Ledger Migration" is not.
+   exist. "<the thing> has slipped three times, each for a different upstream
+   reason" is an insight. "There were several discussions about <the thing>"
+   is not.
 
 5. Decline when there is nothing worth keeping. Fewer than three related
    episodes, or three that say unrelated things, is not material for an

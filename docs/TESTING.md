@@ -1098,6 +1098,55 @@ over-sharing in section 5 -- a model that was told the passport expiry
 date once volunteered it while booking a cinema ticket -- so the block
 says plainly not to recite them unasked, and is capped at twelve.
 
+## 3o. World data in the role prompts
+
+**Asked for:** nothing about the user hardcoded into an agent -- prompts
+carry instructions and constraints, and everything else is read.
+
+Auditing found it in four places. `archivist.txt` and `consolidate.txt`
+illustrated consolidation with **"Ledger Migration"**, an actual `Project`
+in the Acme graph. `curator.txt` scoped a rule with **"notify Priya"**,
+who is an actual `Person` in it. And the prompts written during this
+session had picked up the demo's own vocabulary -- `PriorityQueue`,
+`lift control logic`, `dentist`.
+
+This matters beyond tidiness: it undercuts the central claim. An agent
+whose role prompt names a project has been *told* about that project, and
+`find_prompt_leaks` would be right to count it. The leak checks run so far
+happened to use needles like `ArrayDeque` and never `Priya`.
+
+**Changed:** every concrete example replaced with a placeholder that
+cannot collide with a graph -- "always do X, never do Y", "<the thing> has
+slipped three times", "a rule phrased as *whenever this system is
+involved, do X*".
+
+### The test that enforces it, and the hour it took to make it work
+
+`test_no_prompt_names_anything_from_the_seeded_worlds` reads the shipped
+world files and asserts no prompt contains any of those names. Three
+things had to be got right, and the third is the useful one.
+
+**It must match whole words.** A substring check made "Ship" fire inside
+"relationship" and "Sam" inside "same" -- every prompt an offender.
+
+**It must not ban ordinary words.** A `Reporting API` system makes
+"reporting" a banned term. So the ban covers people's names, including
+first names (an example reading "notify Priya" does not contain the
+string "Priya Nair"), and multi-word entity names -- never a single
+common word.
+
+**And it has to be able to fail.** Written with a heredoc, the `` word
+boundaries became **literal backspace characters**, so the pattern was
+`Ledger Migration` and matched nothing. The test passed on a
+clean tree and passed just as happily with "Ledger Migration" planted in
+`coder.txt`. Nothing in the output distinguished the two.
+
+It only came to light because the violation was planted deliberately to
+watch the test fail. A test that cannot fail is worse than no test: it
+reports the thing it was meant to guard as safe. The boundaries are now
+explicit look-arounds, and both directions are verified -- clean passes,
+planted violation fails naming the file and the term.
+
 ## 4. Still open
 
 - **A person's own words are still recalled after the fact is retired.**
@@ -1119,6 +1168,11 @@ says plainly not to recite them unasked, and is capped at twelve.
   what counts as deciding. Observed to discriminate correctly between a
   question, an option list and a choice on a live run, but that is one run
   on one model, not a measurement.
+
+- **The no-hardcoding test only knows the shipped worlds.** It cannot see
+  names a user invents, so a prompt naming something from somebody's own
+  graph would pass. It catches the class of mistake that actually
+  happened; it does not prove the property.
 
 - **Agent routing is only as good as the model.** The Planner picks from
   a roster it reads, and on a 9B model it sometimes answers itself rather
