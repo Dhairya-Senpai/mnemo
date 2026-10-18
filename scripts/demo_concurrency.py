@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from falkordb import FalkorDB  # noqa: E402
 
 from memory import MemoryStore  # noqa: E402
+from memory.store import DEFAULT_HOST, DEFAULT_PORT  # noqa: E402
 
 TENANT = "concurrency"
 GRAPH = f"tenant_{TENANT}"
@@ -36,7 +37,7 @@ GRAPH = f"tenant_{TENANT}"
 
 def build(tasks):
     """A graph with one agent, one project, and `tasks` open tasks."""
-    db = FalkorDB(host="localhost", port=6379)
+    db = FalkorDB(host=DEFAULT_HOST, port=DEFAULT_PORT)
     try:
         db.select_graph(GRAPH).delete()
     except Exception:
@@ -195,7 +196,7 @@ def main():
     control(store, session, workers)
 
     try:
-        FalkorDB(host="localhost", port=6379).select_graph(GRAPH).delete()
+        FalkorDB(host=DEFAULT_HOST, port=DEFAULT_PORT).select_graph(GRAPH).delete()
     except Exception:
         pass
     return 0 if ok else 1

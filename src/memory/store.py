@@ -23,6 +23,7 @@ Design notes worth knowing before reading the methods:
 """
 
 import json
+import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -49,12 +50,22 @@ from .schema import (
 )
 
 
+# Where FalkorDB is. Defaults to a local Docker container, which is what the
+# README's quick path starts, and comes from the environment when something
+# else is running the database -- the compose stack puts it on the hostname
+# `falkordb`, and a managed instance is somewhere else again. Hardcoding
+# localhost meant the only way to point this anywhere else was to edit the
+# source.
+DEFAULT_HOST = os.environ.get("FALKORDB_HOST", "localhost")
+DEFAULT_PORT = int(os.environ.get("FALKORDB_PORT", "6379"))
+
+
 def utc_now():
     """Second-precision ISO-8601 UTC, e.g. 2026-10-15T14:30:00Z."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def list_tenants(host="localhost", port=6379):
+def list_tenants(host=None, port=None):
     """Every workspace that exists, most recently created first.
 
     There is no registry of workspaces anywhere in this project, and that is
@@ -68,7 +79,7 @@ def list_tenants(host="localhost", port=6379):
     first session opened against a workspace is the moment it started
     existing, which is the same thing measured from the inside.
     """
-    db = FalkorDB(host=host, port=port)
+    db = FalkorDB(host=host or DEFAULT_HOST, port=port or DEFAULT_PORT)
     names = [n[len("tenant_"):] for n in db.list_graphs()
              if n.startswith("tenant_")]
 
@@ -85,14 +96,14 @@ def list_tenants(host="localhost", port=6379):
     return names
 
 
-def rename_tenant(old, new, host="localhost", port=6379):
+def rename_tenant(old, new, host=None, port=None):
     """Rename a workspace, moving the graph rather than copying it.
 
     FalkorDB has no GRAPH.RENAME. It does not need one: a graph lives under a
     single Redis key, so RENAME moves the whole thing -- nodes, edges and
     indexes -- in one operation. Verified against FalkorDB v6.0.2.
     """
-    db = FalkorDB(host=host, port=port)
+    db = FalkorDB(host=host or DEFAULT_HOST, port=port or DEFAULT_PORT)
     if f"tenant_{new}" in db.list_graphs():
         raise ValueError(f"a workspace named {new!r} already exists")
     if f"tenant_{old}" not in db.list_graphs():
@@ -100,9 +111,10 @@ def rename_tenant(old, new, host="localhost", port=6379):
     db.connection.rename(f"tenant_{old}", f"tenant_{new}")
 
 
-def delete_tenant(name, host="localhost", port=6379):
+def delete_tenant(name, host=None, port=None):
     """Drop a workspace entirely. This one really does delete."""
-    FalkorDB(host=host, port=port).select_graph(f"tenant_{name}").delete()
+    FalkorDB(host=host or DEFAULT_HOST,
+             port=port or DEFAULT_PORT).select_graph(f"tenant_{name}").delete()
 
 
 class MemoryStore:
@@ -114,10 +126,11 @@ class MemoryStore:
     a WHERE clause -- isolation is structural.
     """
 
-    def __init__(self, tenant, host="localhost", port=6379, clock=utc_now):
+    def __init__(self, tenant, host=None, port=None, clock=utc_now):
         self.tenant = tenant
         self.graph_name = f"tenant_{tenant}"
-        self._db = FalkorDB(host=host, port=port)
+        self._db = FalkorDB(host=host or DEFAULT_HOST,
+                            port=port or DEFAULT_PORT)
         self._g = self._db.select_graph(self.graph_name)
         self._clock = clock
         # Query counters, so the concurrency demo can report what actually

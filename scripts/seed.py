@@ -3,7 +3,7 @@
 Usage:
     python scripts/seed.py                      # seed every tenant
     python scripts/seed.py --tenant acme        # just one
-    python scripts/seed.py --host localhost --port 6379
+    python scripts/seed.py --host <host> --port <port>
 
 Each run DROPS the tenant's graph and rebuilds it, so seeding is repeatable
 and the demo always starts from a known state.
@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT / "src"))
 # either), so they must come from that table and never from the data file.
 # Values always go through parameters.
 from memory.schema import FACT_ENDPOINTS, INDEXES  # noqa: E402
+from memory.store import DEFAULT_HOST, DEFAULT_PORT  # noqa: E402
 
 # Properties carried by every versioned fact. `valid_to` is deliberately
 # absent while a fact is current -- FalkorDB cannot store null, so an absent
@@ -247,8 +248,8 @@ def summarise(g):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="localhost")
-    ap.add_argument("--port", type=int, default=6379)
+    ap.add_argument("--host", default=DEFAULT_HOST)
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--tenant", help="seed only this tenant (e.g. acme)")
     args = ap.parse_args()
 

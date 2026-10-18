@@ -1,0 +1,22 @@
+# Keep the build context small and the image free of local state.
+.git/
+.github/
+.claude/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+docs/
+tests/
+CLAUDE.md
+PROJECT_CONTEXT.md
+*.log
+*.rdb
+.env
+.env.*
+.DS_Store
+Thumbs.db

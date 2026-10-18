@@ -1,0 +1,131 @@
+# One command brings up the whole thing: the graph database, a local model,
+# the seeded demo data, and the chat app.
+#
+#     docker compose up
+#
+# Then open http://localhost:8501. FalkorDB Browser is on :3000.
+#
+# The first run downloads the model — about 5.6 GB for the default — into a
+# named volume, so it happens once. Later runs start in seconds.
+#
+# Nothing here needs an API key. The model runs locally.
+
+name: mnemo
+
+services:
+  # ---------------------------------------------------------------- the graph
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: mnemo-falkordb
+    ports:
+      - "6379:6379"   # the database
+      - "3000:3000"   # FalkorDB Browser, for poking at the graph by hand
+    volumes:
+      - falkordb-data:/var/lib/falkordb/data
+    healthcheck:
+      # Everything else waits on this. Without it the seeder races the
+      # database and fails on a connection refused that looks like a bug.
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- the model
+  ollama:
+    image: ollama/ollama:latest
+    container_name: mnemo-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      # Named, so the model survives `docker compose down` and is downloaded
+      # once rather than on every run.
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+    # ---- GPU, if you have one -------------------------------------------
+    # Uncomment with the NVIDIA Container Toolkit installed. Without it the
+    # model runs on CPU, which works and is slow: expect tens of seconds a
+    # turn rather than a couple. Left commented because a GPU block that
+    # cannot be satisfied stops the stack from starting at all.
+    #
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # -------------------------------------------- one-shot: fetch the weights
+  model-pull:
+    image: ollama/ollama:latest
+    container_name: mnemo-model-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      # The CLI talks to the server over the network, so this pulls into the
+      # ollama service's volume rather than this container's filesystem.
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Pulling ${MNEMO_MODEL:-ornith:9b} — about 5.6 GB on the first run."
+        ollama pull "${MNEMO_MODEL:-ornith:9b}"
+        echo "Model ready."
+    restart: "no"
+
+  # --------------------------------------- one-shot: build the demo graphs
+  seed:
+    build: .
+    container_name: mnemo-seed
+    depends_on:
+      falkordb:
+        condition: service_healthy
+    environment:
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+    # The company world, the ten demo moments that give Acme its launch
+    # conflict and blocked release, then the conversational workspace.
+    # None of these needs a model: the demo moments drive a scripted
+    # adapter, so seeding does not wait on the download.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        python scripts/seed.py
+        python scripts/run_demo.py --no-reset > /dev/null
+        python scripts/seed_demo.py
+    restart: "no"
+
+  # ------------------------------------------------------------------ the app
+  app:
+    build: .
+    container_name: mnemo-app
+    ports:
+      - "8501:8501"
+    depends_on:
+      falkordb:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+      model-pull:
+        condition: service_completed_successfully
+    environment:
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+      OLLAMA_HOST: http://ollama:11434
+      LLM_PROVIDER: ollama
+      LLM_MODEL: ${MNEMO_MODEL:-ornith:9b}
+      # Only needed if you switch the model picker to Claude in the UI.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    restart: unless-stopped
+
+volumes:
+  falkordb-data:
+  ollama-models:

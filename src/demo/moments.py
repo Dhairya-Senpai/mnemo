@@ -34,6 +34,7 @@ from agents import (  # noqa: E402
 from llm import FakeAdapter, calls, says  # noqa: E402
 from llm.fake import last_tool_result  # noqa: E402
 from memory import MemoryStore  # noqa: E402
+from memory.store import DEFAULT_HOST, DEFAULT_PORT  # noqa: E402
 
 DELAY = "Delay Spring Launch to May 15, 2027"
 
@@ -67,7 +68,7 @@ def reset_world():
     seed = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(seed)
     from falkordb import FalkorDB
-    db = FalkorDB(host="localhost", port=6379)
+    db = FalkorDB(host=DEFAULT_HOST, port=DEFAULT_PORT)
     for name in ("world_acme.json", "world_globex.json"):
         path = ROOT / "data" / name
         world = json.loads(path.read_text(encoding="utf-8"))
@@ -327,7 +328,7 @@ def m6_tenant_isolation(store):
 def m7_concurrency(store):
     from falkordb import FalkorDB
     graph = "tenant_demo_load"
-    db = FalkorDB(host="localhost", port=6379)
+    db = FalkorDB(host=DEFAULT_HOST, port=DEFAULT_PORT)
     try:
         db.select_graph(graph).delete()
     except Exception:
