@@ -658,6 +658,124 @@ def test_a_broken_curator_does_not_break_the_turn():
 
 
 @test
+def test_the_agent_can_see_earlier_turns_of_the_same_chat():
+    """The worst defect found so far, and the simplest.
+
+    `run` began every turn with `[Message(user_message)]` and nothing else,
+    so the model had never seen what was said earlier in the same
+    conversation. The UI shows a continuous thread; the model saw each
+    message alone. Asked "can you add my uid to this code?" two messages
+    after writing three thousand characters of Java, it replied "I don't
+    see any code attached to your message" -- truthfully.
+    """
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    llm = FakeAdapter([says("Here is the Java: class Solution {}"),
+                       curation(topics=["array reordering"]),
+                       says("Added."),
+                       curation(topics=["array reordering"])])
+    planner = build_planner(store, sid, llm)
+    planner.run("give me the solution")
+    turn = planner.run("add my uid at the top of this code")
+
+    sent = [m for m in turn.messages if m.role in ("user", "assistant")]
+    said = " ".join(m.text or "" for m in sent)
+    assert "class Solution {}" in said,         f"the earlier answer must be replayed into the turn: {said[:300]}"
+    assert "give me the solution" in said, "and the earlier question"
+
+
+@test
+def test_the_replayed_history_comes_from_the_graph():
+    """Not from anything this process is holding. A fresh Agent object on
+    the same session sees the same conversation, which is what makes this
+    graph memory rather than a chat buffer."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    build_planner(store, sid, FakeAdapter([
+        says("First answer."), curation()])).run("first question")
+
+    fresh = build_planner(store, sid, FakeAdapter([
+        says("Second answer."), curation()]))
+    turn = fresh.run("second question")
+    said = " ".join(m.text or "" for m in turn.messages if m.text)
+    assert "First answer." in said and "first question" in said, said[:300]
+
+
+@test
+def test_history_is_bounded_and_starts_on_a_user_turn():
+    """A turn here can be four thousand characters of Java, and a real run
+    recorded "reply hit the context limit (num_ctx=16384)"."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    for i in range(12):
+        store.record_event(sid, "Planner", "message", f"q{i} " + "x" * 600,
+                           speaker="user")
+        store.record_event(sid, "Planner", "message", f"a{i} " + "y" * 600,
+                           speaker="Planner")
+    planner = build_planner(store, sid, FakeAdapter([says("ok"), curation()]))
+    history = planner._history()
+    assert history, "some history must survive"
+    assert sum(len(m.text) for m in history) <= planner.HISTORY_CHARS + 1200
+    assert history[0].role == "user",         "an assistant message with no question before it reads as the model "        "talking to itself"
+
+
+@test
+def test_a_preference_is_not_recorded_as_a_second_decision():
+    """Found by use: a coding preference stated across a conversation
+    produced three Decision nodes -- "Code language preference: Java
+    first", "First preference language for code", "Code comments rule" --
+    each a near-duplicate of a standing rule the curator had already
+    stored."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    first = store.record_decision(sid, "Planner",
+                                  "Code language preference: Java first",
+                                  "the person asked for it")
+    again = store.record_decision(sid, "Planner",
+                                  "First preference language for code",
+                                  "the person asked again")
+    assert again == first, "the duplicate must return the existing decision"
+    assert store._read("MATCH (d:Decision) WHERE d.valid_to IS NULL "
+                       "RETURN count(d)")[0][0] == 1
+
+
+@test
+def test_superseding_a_decision_is_never_treated_as_a_duplicate():
+    """Superseding is the sanctioned way to restate a decision and it keeps
+    the history connected, so the guard must not block it."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    old = store.record_decision(sid, "Planner", "Delay launch to May",
+                                "ledger blocked")
+    new = store.record_decision(sid, "Planner", "Delay launch to May 15",
+                                "ledger still blocked", supersedes=old)
+    assert new != old
+    assert store._read("MATCH (:Decision)-[:SUPERSEDES]->(:Decision) "
+                       "RETURN count(*)")[0][0] == 1
+
+
+@test
+def test_a_rule_is_tied_to_the_subject_it_was_learned_under():
+    """Every Procedure and Decision used to have degree 1 -- one edge, to
+    the Event that made it -- while Topic nodes had ten or twelve. That is
+    what "why is every node single?" was describing."""
+    store = empty_store()
+    sid = store.start_session(user="Siddhi", session_id="s1")
+    eid = store.record_event(sid, "Planner", "message", "java please",
+                             speaker="user")
+    out = apply_curation(store, sid, "Planner", [eid], {
+        "topics": ["array reordering"], "entities": [], "facts": [],
+        "rules": [{"name": "java first", "trigger": "code",
+                   "action": "write Java first"}]})
+    assert out.rules == ["java first"], out
+    assert out.linked_topics >= 1, out
+    reached = store._read(
+        "MATCH (t:Topic {name:'array reordering'})<-[:ABOUT]-(p:Procedure) "
+        "RETURN p.name")
+    assert reached and reached[0][0] == "java first", reached
+
+
+@test
 def test_a_failed_curation_is_recorded_on_the_answer():
     """The curator swallows every exception by design, so that a failure
     costs edges rather than the reply. That made it silent: the person is

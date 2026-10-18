@@ -55,6 +55,7 @@ class Curation:
     entities: list[str] = field(default_factory=list)
     facts: list[str] = field(default_factory=list)
     rules: list[str] = field(default_factory=list)
+    linked_topics: int = 0        # rules/decisions tied to the turn's subject
     skipped: list[str] = field(default_factory=list)
     error: str | None = None
 
@@ -247,6 +248,19 @@ def apply_curation(store, session_id, agent, event_ids, data) -> Curation:
             out.rules.append(name)
         except Exception as exc:
             out.skipped.append(f"rule {name}: {type(exc).__name__}: {exc}")
+
+    # Last, because it attaches what the clauses above just created. A
+    # Procedure or Decision is born with exactly one edge -- to the Event
+    # that made it -- and sits in the rendered graph as an island, which is
+    # what "why is every node single?" was describing. A rule learned while
+    # discussing lift control logic is *about* lift control logic, and that
+    # is a traversal worth having.
+    if topics:
+        try:
+            out.linked_topics = store.link_session_outputs_to_topics(
+                session_id, topics)
+        except Exception as exc:
+            out.skipped.append(f"linking outputs: {type(exc).__name__}")
 
     return out
 

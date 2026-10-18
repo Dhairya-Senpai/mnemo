@@ -63,6 +63,12 @@ class Turn:
     stopped_early: bool = False       # hit the tool-call cap
     lookups: list[str] = field(default_factory=list)   # Lookup ids behind it
     curation: object = None           # what the curator wrote, or None
+    # How many leading messages are this conversation replayed from the
+    # graph rather than produced by this turn. Replayed assistant turns
+    # carry no provider_state by construction -- they are prior turns, and
+    # the provider only requires reasoning blocks to survive within the
+    # turn that produced them.
+    replayed: int = 0
 
     @property
     def tools_used(self) -> list[str]:
@@ -190,6 +196,57 @@ class Agent:
             "or not\nanything in the message mentions them, and they are not "
             "to be restated\nback at the person as news:\n" + lines + "\n")
 
+    # How much of the current conversation to replay. Bounded by characters
+    # rather than turns because a turn here can be four thousand characters
+    # of Java: `failed_curations` recorded a real
+    # "reply hit the context limit (num_ctx=16384)" on exactly that.
+    HISTORY_CHARS = 5000
+    HISTORY_TURNS = 20
+
+    def _history(self) -> list[Message]:
+        """Replay this conversation, read back out of the graph.
+
+        Until now the loop began every turn with `[Message(user_message)]`
+        and nothing else, so the model had never seen what was said earlier
+        in the same chat. The UI shows a continuous thread; the model saw
+        each message alone. Asked "can you add my uid to this code?" two
+        messages after writing three thousand characters of Java, it
+        answered "I don't see any code attached to your message" -- and it
+        was telling the truth.
+
+        The history comes from `session_transcript`, which is a Cypher
+        query, not from anything held in this process. That is the same
+        argument the UI already makes for rebuilding its transcript on every
+        render: kill the process, reload the page, and the conversation is
+        identical because it was never anywhere but the graph. An agent that
+        kept its own history in memory would be the one place in this system
+        where recall did not go through FalkorDB.
+
+        Oldest messages are dropped first, and the result always starts on a
+        user turn -- an assistant message with no question before it reads
+        as the model talking to itself.
+        """
+        try:
+            rows = self.toolbox.store.session_transcript(
+                self.toolbox.session_id, limit=self.HISTORY_TURNS)
+        except Exception:
+            return []                       # never break a turn over this
+        kept, total = [], 0
+        for row in reversed(rows):          # newest first, drop the oldest
+            text = row["text"] or ""
+            if total + len(text) > self.HISTORY_CHARS and kept:
+                break
+            total += len(text)
+            kept.append(row)
+        kept.reverse()
+        while kept and kept[0]["speaker"] != "user":
+            kept.pop(0)
+        return [
+            Message(role="user" if r["speaker"] == "user" else "assistant",
+                    text=r["text"])
+            for r in kept
+        ]
+
     def _remember(self, speaker, text):
         return self.toolbox.store.record_event(
             self.toolbox.session_id, self.name, "message", text, speaker=speaker)
@@ -209,7 +266,7 @@ class Agent:
             self.name, user_text, reply_text, event_ids)
 
     def _close(self, text, steps, messages, stopped_early, record,
-               user_event=None, user_text="") -> Turn:
+               user_event=None, user_text="", replayed=0) -> Turn:
         """Write the answer, then point it at the reads that produced it.
 
         The READ edges are what make "why did you say that" a traversal
@@ -244,7 +301,7 @@ class Agent:
                     pass          # never let bookkeeping break a turn
         return Turn(text=text, steps=steps, messages=messages,
                     stopped_early=stopped_early, lookups=lookups,
-                    curation=curation)
+                    curation=curation, replayed=replayed)
 
     def run(self, user_message: str, record=True, speaker="user") -> Turn:
         """Answer one message, running tools until the model stops asking.
@@ -257,11 +314,15 @@ class Agent:
         `record=False` skips the episodic write, for read-only questions
         where an event would be noise.
         """
+        # Replay this conversation BEFORE recording the new message, so the
+        # current turn is not in it twice.
+        history = self._history()
         user_event = self._remember(speaker, user_message) if record else None
 
         # One turn, one trace. The toolbox fills this as the model reads.
         self.toolbox.lookups.clear()
-        messages: list[Message] = [Message(role="user", text=user_message)]
+        messages: list[Message] = history + [
+            Message(role="user", text=user_message)]
         specs = self.toolbox.specs()
         steps: list[Step] = []
         stopped_early = False
@@ -280,7 +341,7 @@ class Agent:
                                         provider_state=response.raw))
                 return self._close(response.text, steps, messages,
                                    stopped_early, record,
-                                   user_event, user_message)
+                                   user_event, user_message, len(history))
 
             # Carry provider_state so the assistant turn replays byte-identically.
             messages.append(Message(
@@ -340,7 +401,7 @@ class Agent:
                 messages.append(Message(role="assistant", text=final,
                                         provider_state=None))
                 return self._close(final, steps, messages, True, record,
-                                   user_event, user_message)
+                                   user_event, user_message, len(history))
 
     def _final_answer(self, messages) -> str:
         """Get prose out of the model once the tool budget is spent.

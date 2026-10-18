@@ -517,6 +517,34 @@ class MemoryStore:
         )
         return [r[0] for r in rows]
 
+    def link_session_outputs_to_topics(self, session_id, topics):
+        """Attach this conversation's rules and decisions to its subjects.
+
+        A `Procedure` or `Decision` is created with exactly one edge, to the
+        `Event` that made it. That makes it an island: it cannot be reached
+        from the subject it was agreed under, and in the rendered graph it
+        is a dot on its own. Counted on a real workspace, every Decision and
+        every Procedure had degree 1 while the Topic nodes had 10 and 12.
+
+        ABOUT is reused here for the same reason as everywhere else -- "what
+        is this node concerned with" is one question. Returns how many edges
+        were newly created, so the caller reports rather than asserts.
+        """
+        made = 0
+        for raw in topics or []:
+            try:
+                name = self._clean_topic(raw)
+            except ValueError:
+                continue
+            res = self._write(
+                "MATCH (s:Session {id:$sid})-[:HAS_EVENT]->(e:Event) "
+                "MATCH (n)-[:RECORDED_IN|LEARNED_FROM]->(e) "
+                "MATCH (t:Topic {name:$name}) "
+                "MERGE (n)-[:ABOUT]->(t)",
+                sid=session_id, name=name)
+            made += res.relationships_created
+        return made
+
     def topic_index(self, limit=12):
         """One line per subject this workspace has discussed, newest first.
 
@@ -854,7 +882,21 @@ class MemoryStore:
         call: its valid_to closes and a SUPERSEDES edge records what replaced
         it. valid_to says a fact stopped being current; SUPERSEDES says what
         replaced it, and the demo needs both.
+
+        Re-recording a decision that is already current is refused. Found by
+        use: a person stated a coding preference three times across a
+        conversation and the Planner wrote three Decision nodes --
+        "Code language preference: Java first", "First preference language
+        for code", "Code comments rule" -- each a near-duplicate of a
+        standing rule the curator had already stored properly. Telling the
+        Planner in its prompt that a preference is not a decision is the
+        first line of defence and, on the evidence in docs/TESTING.md, not
+        one that holds by itself.
         """
+        if supersedes is None:
+            twin = self.similar_decision(title)
+            if twin:
+                return twin
         eid = self.record_event(
             session_id, agent, "decision", f"Recorded decision: {title}",
             about=[("Project", p) for p in affects],
@@ -1211,6 +1253,28 @@ class MemoryStore:
             overlap = len(wanted & other) / max(len(wanted), len(other))
             if overlap >= threshold:
                 return name
+        return None
+
+    def similar_decision(self, title, threshold=0.7):
+        """The id of a currently-valid decision that already says this.
+
+        Same comparison as `similar_procedure`, on the title, because a
+        decision's title is what it decides. Deliberately only applied when
+        no `supersedes` is passed: superseding is the sanctioned way to
+        restate a decision, and it keeps the history connected.
+        """
+        wanted = self._rule_words(title)
+        if not wanted:
+            return None
+        rows = self._read(
+            "MATCH (d:Decision) WHERE d.valid_to IS NULL "
+            "RETURN d.id, d.title")
+        for did, existing in rows:
+            other = self._rule_words(existing)
+            if not other:
+                continue
+            if len(wanted & other) / max(len(wanted), len(other)) >= threshold:
+                return did
         return None
 
     def procedure_exists(self, name):

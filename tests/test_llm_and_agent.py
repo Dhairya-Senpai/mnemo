@@ -493,8 +493,17 @@ def test_provider_state_is_carried_on_assistant_turns():
                         raw=["ORIGINAL-BLOCKS-2"])
     agent = planner([first, final])
     turn = agent.run("what happened")
-    carried = [m.provider_state for m in turn.messages if m.role == "assistant"]
+    # Only the turns this run produced. `turn.replayed` counts the leading
+    # messages that are this conversation read back from the graph; those
+    # are prior turns and carry no provider_state by construction, because
+    # the provider only needs reasoning blocks preserved within the turn
+    # that produced them.
+    own = turn.messages[turn.replayed:]
+    carried = [m.provider_state for m in own if m.role == "assistant"]
     assert carried == [["ORIGINAL-BLOCKS-1"], ["ORIGINAL-BLOCKS-2"]], carried
+    assert all(m.provider_state is None
+               for m in turn.messages[:turn.replayed]), "replayed history"
+
 
 
 @test

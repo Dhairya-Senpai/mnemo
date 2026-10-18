@@ -469,6 +469,112 @@ session 2  (NEW CHAT) "can you provide me code for bfs ?"
            -> "Here's a BFS implementation in Java:"
 ```
 
+## 3f. The agent could not see the conversation it was having
+
+**Found by:** working through a LeetCode problem over five turns, then
+asking "can you add my uid at the top of this code?" and getting
+*"I don't see any code attached to your message."* It had written three
+thousand characters of Java two messages earlier.
+
+It was telling the truth. `Agent.run` began every turn with:
+
+```python
+messages: list[Message] = [Message(role="user", text=user_message)]
+```
+
+**One message. No history, ever.** The UI shows a continuous thread and the
+model saw each message alone. Every "fix this", "that one", "the code you
+just gave me" was unanswerable, and had been since the agent loop was
+written — missed because every test and every demo moment is a single turn
+or a deliberate cross-session recall, and because the prompt told the agent
+its memory was the graph, which read as an explanation rather than a bug.
+
+**Changed:** the loop now replays the conversation at the start of each
+turn, **read back out of the graph** by `session_transcript` — the same
+Cypher the UI uses to rebuild its transcript on reload. That matters for
+more than tidiness: an agent holding its own history in process memory
+would be the one place in this system where recall did not go through
+FalkorDB. Kill the process, reload the page, and the conversation the model
+sees is identical, because it was never anywhere else.
+
+Bounded by characters rather than turns, because a turn here can be four
+thousand characters of Java. The visibility added in 3e earned itself
+immediately by recording the reason a curation had failed on exactly such a
+turn:
+
+```
+LLMError: reply hit the context limit (num_ctx=16384) and is truncated
+```
+
+The prompt was also wrong and is now corrected. It said "do not rely on
+what appears earlier in this conversation as if it were established fact",
+which is right about *facts* and wrong about *working context*: what "this
+code" refers to is in the conversation, and asking the person to repeat
+themselves is a failure. It now distinguishes the two.
+
+One invariant had to be narrowed rather than dropped.
+`test_provider_state_is_carried_on_assistant_turns` asserts the loop hands
+the provider's original turn back untouched so reasoning blocks replay
+byte-identically. Replayed history carries no `provider_state` — it is
+prior turns, and the provider only requires reasoning blocks preserved
+within the turn that produced them. `Turn.replayed` now counts the leading
+messages that are history, and the invariant applies to the rest. The
+Claude adapter already rebuilds a `provider_state`-less assistant turn from
+text, so this is handled — **but no request has ever been sent to the
+Anthropic API, so that path remains unverified against the real thing.**
+
+## 3g. Three copies of the same preference
+
+**Found by:** the same session. Four `Decision` nodes, three of them the
+same two preferences:
+
+```
+Decision  'Code comments rule'
+Decision  'Code language preference: Java first'
+Decision  'First preference language for code'
+```
+
+The curator had already stored both correctly as `Procedure` nodes. The
+Planner still has `record_decision` — it needs it, demo moments 1 and 5a
+turn on it — and was using it for preferences as well, so every preference
+landed twice, and again each time it was mentioned.
+
+**Changed, in both places:** the prompt now says a preference is not a
+decision, and `record_decision` refuses a near-duplicate of a currently
+valid decision, returning the existing id. The guard is skipped when
+`supersedes` is passed, because superseding is the sanctioned way to
+restate a decision and it keeps the history connected. On the evidence in
+this file the prompt half will not hold alone; the refusal is the half that
+will.
+
+## 3h. Why every node looked single
+
+**Found by:** looking at the rendered graph and asking why nothing connects.
+
+Measured on a real workspace:
+
+```
+Decision  'Code comments rule'              degree 1
+Decision  'Code language preference...'     degree 1
+Procedure 'comment every line of code'      degree 1
+Procedure 'Java first preference for code'  degree 1
+Topic     'array reordering'                degree 12
+Topic     'lift control logic'              degree 10
+```
+
+A `Procedure` or `Decision` is created with exactly one edge, to the
+`Event` that made it. Nothing tied it to the subject it was agreed under,
+so in the canvas it is a dot on its own — correct, and useless.
+
+**Changed:** after a curation writes its facts and rules, whatever this
+conversation created is linked `ABOUT` the turn's topics. A rule learned
+while discussing lift control logic is about lift control logic, and that
+is a traversal worth having. `ABOUT` is reused here for the same reason as
+everywhere else: "what is this node concerned with" is one question.
+
+The ordering caught a bug of its own in review — the link ran before the
+rules were written, so it linked nothing. It now runs last.
+
 ### What a live run confirmed
 
 Fresh workspace, three sessions, nothing carried between them but the graph:
