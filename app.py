@@ -55,9 +55,30 @@ st.markdown("""
 .mnemo-mark {
     font-family: Georgia, 'Iowan Old Style', 'Times New Roman', serif;
     font-size: 1.3rem;
+    line-height: 1.6rem;
     color: #E8E6DC;
     opacity: .92;
-    padding: .1rem 0 .8rem 0;
+    padding: 0 0 .9rem 0;
+    /* The name's box spans the sidebar and so sits over the collapse
+       control. It is text, not a target, so let clicks through to it. */
+    width: fit-content;
+    pointer-events: none;
+}
+
+/* Streamlit reserves a 56px strip at the head of the sidebar for the
+   collapse control and begins the content below it, which left the name
+   sitting in a gap. Pulling the content up into that strip puts the name on
+   the same line as the control -- it is left aligned, the control is right
+   aligned, so they share the row rather than collide. */
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+    padding-top: 0 !important;
+    margin-top: -3.9rem !important;
+}
+/* Pulling the content up puts its box over the collapse control, which then
+   swallows the click. Lifting the header above it hands those clicks back. */
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] {
+    position: relative !important;
+    z-index: 10 !important;
 }
 
 /* A conversation row is a row, not a button: no outline, no fill, left
