@@ -1,0 +1,38 @@
+# Use the Ollama already installed on your machine, instead of the one in
+# the stack.
+#
+#     docker compose -f docker-compose.yml -f docker-compose.host-ollama.yml \
+#       up falkordb seed app
+#
+# Naming the three services is what keeps `ollama` and `model-pull` from
+# starting at all.
+#
+# ---------------------------------------------------------------------------
+# On a Mac this is the path you want.
+#
+# Docker on macOS runs a Linux VM and Apple's Metal GPU cannot be passed
+# into it, so Ollama *inside* a container is CPU-only however much hardware
+# the machine has. Ollama installed natively uses Metal and is dramatically
+# faster for the same model. The default stack still works on a Mac -- the
+# images are all native arm64 -- it is just slow.
+#
+# It is also useful anywhere you have already downloaded the model and would
+# rather not pull a second copy into a container volume.
+# ---------------------------------------------------------------------------
+
+services:
+  app:
+    environment:
+      # Docker Desktop resolves this to the host on macOS and Windows. The
+      # extra_hosts entry below is what makes it work on Linux too.
+      OLLAMA_HOST: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # `!override` because compose merges mappings by default: without it the
+    # dependency on model-pull survives and the stack waits forever for a
+    # service that was never asked to start.
+    depends_on: !override
+      falkordb:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
