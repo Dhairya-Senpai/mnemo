@@ -74,11 +74,16 @@ def graph_payload(store, labels, cited=(), changed=(), max_nodes=120):
         node_where = "true"
         edge_where = "true"
     elif labels is None:
+        # Plumbing out: the episodic record, the reasoning trace, and the
+        # roster. `Capability` belongs with `Agent` here -- it is how work
+        # is routed, not something the workspace knows -- and was showing
+        # up beside the facts until this said so.
         node_where = ("NOT n:Event AND NOT n:Session AND NOT n:Lookup "
-                      "AND NOT n:Agent")
+                      "AND NOT n:Agent AND NOT n:Capability")
         edge_where = ("NOT a:Event AND NOT a:Session AND NOT a:Lookup "
-                      "AND NOT a:Agent AND NOT b:Event AND NOT b:Session "
-                      "AND NOT b:Lookup AND NOT b:Agent")
+                      "AND NOT a:Agent AND NOT a:Capability "
+                      "AND NOT b:Event AND NOT b:Session "
+                      "AND NOT b:Lookup AND NOT b:Agent AND NOT b:Capability")
     else:
         label_list = ", ".join(f"'{l}'" for l in labels)
         node_where = f"labels(n)[0] IN [{label_list}]"

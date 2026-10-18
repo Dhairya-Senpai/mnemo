@@ -195,6 +195,16 @@ class MemoryStore:
         """
         if self._indexed:
             return
+        # Ask the database, do not trust the flag alone. `_indexed` caches a
+        # fact about the graph inside this process, and a graph can be
+        # dropped underneath a long-lived store -- which is exactly what
+        # happened: workspaces deleted while the UI held cached stores came
+        # back with zero indexes and no agent roster, because the flag said
+        # the work was done. One cheap read on a path that runs once per
+        # conversation is a better trade than a stale boolean.
+        if self._read("CALL db.indexes() YIELD label RETURN label"):
+            self._indexed = True
+            return
         for label, prop in INDEXES:
             try:
                 self._write(f"CREATE INDEX FOR (n:{label}) ON (n.{prop})")

@@ -504,18 +504,15 @@ def _draw_legend(key):
 
 @st.dialog("The graph", width="large")
 def window_graph():
-    # One graph, unfiltered. The view picker was a leftover from the
-    # company-world demo, where hiding the episodic tier made the dozen
-    # business nodes legible. It stopped being right once the conversation
-    # became part of the graph: the interesting structure *is* the episodes
-    # joined to their subjects, and a filter that hides them by default is
-    # the reason this looked emptier than FalkorDB Browser showing the same
-    # database. The allow-lists survive in graphview.VIEWS for the offline
-    # Graphviz renderer.
+    # Two views, not the five this once had. Most of those were allow-lists
+    # built for the seeded company world and confusing in a chat app. What
+    # is worth switching between is the things you know and all of it.
+    view = st.radio("View", list(VIEWS), horizontal=True,
+                    label_visibility="collapsed")
     changes = st.session_state.changes
     changed = [n["name"] for n in changes.added_nodes] if changes else []
     try:
-        payload = graph_payload(store, labels=ALL,
+        payload = graph_payload(store, labels=VIEWS[view],
                                 cited=st.session_state.get("cited_nodes") or [],
                                 changed=changed)
         components.html(canvas_html(payload, height=520, zoom_floor=1.15),

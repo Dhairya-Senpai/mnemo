@@ -51,12 +51,27 @@ CONVERSATION = ("Topic", "Event", "Session")
 # conversation layer exists to make visible.
 ALL = "*"
 
+# Two, deliberately. The picker once had five and most of them were
+# allow-lists built for the seeded company world -- useful while that was
+# the only demo, confusing once the product was a chat app. What is worth
+# switching between is "the things I know" and "all of it".
 VIEWS = {
+    # Facts and the subjects they came up under, with the plumbing left
+    # out: tell it you like Nike shoes and this is where
+    # you -LIKE-> Nike shoes appears, uncluttered by the fifty Event
+    # nodes that recorded the conversation around it.
     "What this workspace knows": None,
+    # Nothing filtered at all -- the same picture FalkorDB Browser draws
+    # from the same database, through the same @falkordb/canvas component.
+    "Falkor": ALL,
+}
+
+# Kept for the offline Graphviz renderer in this module, which still
+# accepts an explicit allow-list.
+LEGACY_VIEWS = {
     "Conversation and subjects": CONVERSATION,
     "World and decisions": WORLD + SEMANTIC,
     "World only": WORLD,
-    "Everything": ALL,
 }
 
 
